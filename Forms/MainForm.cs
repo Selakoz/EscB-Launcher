@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Drawing;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
@@ -20,27 +19,26 @@ internal sealed class MainForm : BaseDarkForm
     private LauncherConfig? _config;
     private RoundedTextBox _nickBox = null!;
     private DarkComboBox _buildsBox = null!;
-    private ModernSlider _ramSlider = null!;
-    private Label _ramValueLabel = null!;
-    private Label _ramWarningLabel = null!;
     private Label _statusLabel = null!;
     private ModernProgressBar _progressBar = null!;
     private RoundedButton _playButton = null!;
     private RoundedButton _settingsButton = null!;
 
     private readonly UserSettings _settings;
-    private readonly bool _isFirstLaunch;
-    private HardwareInfo _hardware = new();
     private BuildInfo _selectedBuild = new();
     private Process? _gameProcess;
     private bool _busy;
-    private int _maxRamMb = 8192;
 
-    public MainForm() : base(new Size(700, 840), allowMinimize: true)
+    public MainForm() : base(new Size(460, 480), allowMinimize: true)
     {
         TitleText = "EscB Client";
 
-        _isFirstLaunch = !File.Exists(LauncherPaths.SettingsFile);
+        // Clean fixed-size OS window (not borderless, not DPI-scaled).
+        this.AutoScaleMode = AutoScaleMode.Font;
+        this.FormBorderStyle = FormBorderStyle.FixedSingle;
+        this.MaximizeBox = false;
+        this.TitleBarPanel.Visible = false;
+
         _settings = SettingsService.Load();
 
         BuildLayout();
@@ -54,27 +52,28 @@ internal sealed class MainForm : BaseDarkForm
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Background,
-            Padding = new Padding(16, 12, 16, 12),
+            Padding = new Padding(12, 8, 12, 8),
             Margin = Padding.Empty
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
         ContentArea.Controls.Add(root);
 
         int row = 0;
-        void Add(Control c)
+        void Add(Control c, int marginBottom = 8)
         {
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize, 100f));
             root.SetRow(c, row);
             root.SetColumn(c, 0);
             root.Controls.Add(c);
+            c.Margin = new Padding(0, 0, 0, marginBottom);
             row++;
         }
 
-        // ---- 1. Banner centered at top ----
+        // ---- 1. Banner centered at top (380x95, 4:1) ----
         var bannerHost = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
-            Height = 120,
+            Height = 115,
             BackColor = Theme.Background,
             Margin = Padding.Empty,
             Padding = Padding.Empty
@@ -86,61 +85,57 @@ internal sealed class MainForm : BaseDarkForm
 
         var banner = new PictureBox
         {
-            Size = new Size(380, 95), // 4:1 aspect ratio
+            Size = new Size(380, 95),
             SizeMode = PictureBoxSizeMode.Zoom,
             BackColor = Theme.Background,
             Image = Branding.LoadBanner(),
-            Anchor = AnchorStyles.None // centered in the middle cell
+            Anchor = AnchorStyles.None
         };
         bannerHost.Controls.Add(banner, 1, 0);
-        Add(bannerHost);
+        Add(bannerHost, 10);
 
-        // ---- 2. Card: nickname, build selector, RAM ----
+        // ---- 2. Card: nickname + build version ----
         var card = new RoundedPanel
         {
-            CornerRadius = 16,
+            CornerRadius = 14,
             FillColor = Theme.Surface,
             BorderColor = Theme.Border,
             BorderSize = 1,
             Dock = DockStyle.Top,
-            Height = 250,
-            Margin = new Padding(0, 12, 0, 0),
-            Padding = new Padding(18)
+            Height = 140,
+            Margin = Padding.Empty,
+            Padding = new Padding(16)
         };
 
-        var flow = new FlowLayoutPanel
+        var inner = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            AutoSize = false,
             BackColor = Color.Transparent,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
+        inner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
 
-        // Controls that should stretch to the full card width.
-        var stretchControls = new List<Control>();
-
-        void AddCard(Control c, int marginBottom = 8, bool stretch = false)
+        int r = 0;
+        void AddInner(Control c, int marginBottom = 6)
         {
+            inner.RowStyles.Add(new RowStyle(SizeType.AutoSize, 100f));
+            inner.SetRow(c, r);
+            inner.SetColumn(c, 0);
+            inner.Controls.Add(c);
             c.Margin = new Padding(0, 0, 0, marginBottom);
-            if (stretch)
-            {
-                c.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
-                stretchControls.Add(c);
-            }
-            flow.Controls.Add(c);
+            c.Dock = DockStyle.Top;
+            r++;
         }
 
         var nickLabel = UiFactory.Label(
-            flow,
+            inner,
             "НИКНЕЙМ",
             Theme.Font(8.5f, FontStyle.Bold),
             Theme.Muted,
             Theme.Surface);
-        nickLabel.Margin = new Padding(0, 0, 0, 2);
-        flow.Controls.Add(nickLabel);
+        nickLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+        AddInner(nickLabel, 1);
 
         _nickBox = new RoundedTextBox
         {
@@ -148,23 +143,25 @@ internal sealed class MainForm : BaseDarkForm
             Text = _settings.Nickname,
             Height = 40
         };
+        _nickBox.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
         _nickBox.InnerTextBox.KeyDown += NickBox_KeyDown;
-        AddCard(_nickBox, 8, stretch: true);
+        AddInner(_nickBox, 8);
 
         var buildLabel = UiFactory.Label(
-            flow,
-            "СБОРКА СЕРВЕРА",
+            inner,
+            "ВЕРСИЯ СБОРКИ",
             Theme.Font(8.5f, FontStyle.Bold),
             Theme.Muted,
             Theme.Surface);
-        buildLabel.Margin = new Padding(0, 0, 0, 2);
-        flow.Controls.Add(buildLabel);
+        buildLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+        AddInner(buildLabel, 1);
 
         _buildsBox = new DarkComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
             Height = 34
         };
+        _buildsBox.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
         _buildsBox.SelectedIndexChanged += (_, _) =>
         {
             if (_buildsBox.SelectedItem is BuildInfo build)
@@ -173,81 +170,30 @@ internal sealed class MainForm : BaseDarkForm
                 _settings.SelectedBuildId = build.Id;
             }
         };
-        AddCard(_buildsBox, 8, stretch: true);
+        AddInner(_buildsBox, 0);
 
-        // RAM header: label left, value right.
-        var ramHeader = new TableLayoutPanel
+        card.Controls.Add(inner);
+        Add(card, 10);
+
+        // ---- 3. Buttons: Settings + Play ----
+        var buttonRow = new TableLayoutPanel
         {
-            ColumnStyles = { new ColumnStyle(SizeType.Percent, 70f), new ColumnStyle(SizeType.Percent, 30f) },
-            RowStyles = { new RowStyle(SizeType.Absolute, 22f) },
-            Margin = new Padding(0, 2, 0, 2),
+            Dock = DockStyle.Top,
+            ColumnStyles =
+            {
+                new ColumnStyle(SizeType.AutoSize),
+                new ColumnStyle(SizeType.Percent, 100f)
+            },
+            RowStyles = { new RowStyle(SizeType.Absolute, 40f) },
+            Margin = Padding.Empty,
             Padding = Padding.Empty
         };
 
-        var ramLabel = UiFactory.Label(
-            ramHeader,
-            "ОПЕРАТИВНАЯ ПАМЯТЬ",
-            Theme.Font(8.5f, FontStyle.Bold),
-            Theme.Muted,
-            Theme.Surface);
-        ramLabel.Anchor = AnchorStyles.Left;
-
-        _ramValueLabel = UiFactory.Label(
-            ramHeader,
-            "4096 МБ",
-            Theme.Font(10f, FontStyle.Bold),
-            Theme.Accent,
-            Theme.Surface);
-        _ramValueLabel.Anchor = AnchorStyles.Right;
-        _ramValueLabel.TextAlign = ContentAlignment.MiddleRight;
-
-        ramHeader.Controls.Add(ramLabel, 0, 0);
-        ramHeader.Controls.Add(_ramValueLabel, 1, 0);
-        ramHeader.Margin = new Padding(0, 0, 0, 2);
-        flow.Controls.Add(ramHeader);
-
-        _ramSlider = new ModernSlider
-        {
-            Minimum = 1024,
-            Maximum = 8192,
-            Step = 512,
-            Value = 4096,
-            Height = 30
-        };
-        _ramSlider.ValueChanged += (_, _) => UpdateRamWarning();
-        AddCard(_ramSlider, 4, stretch: true);
-
-        _ramWarningLabel = UiFactory.Label(
-            flow,
-            "Определение объёма ОЗУ...",
-            Theme.Font(8.5f),
-            Theme.Muted,
-            Theme.Surface);
-        _ramWarningLabel.Margin = new Padding(0, 0, 0, 0);
-        flow.Controls.Add(_ramWarningLabel);
-
-        card.Controls.Add(flow);
-
-        // Keep stretchable controls full-width whenever the card/flow resizes.
-        void StretchCard()
-        {
-            int w = Math.Max(1, flow.ClientSize.Width - 20);
-            foreach (var c in stretchControls)
-                c.Width = w;
-            ramHeader.Width = w;
-        }
-
-        flow.Resize += (_, _) => StretchCard();
-        card.Resize += (_, _) => StretchCard();
-
-        Add(card);
-
-        // ---- 3. Buttons: Settings + Play ----
         _settingsButton = new RoundedButton
         {
             Text = "Настройки",
-            Width = 160,
-            Height = 38,
+            Width = 110,
+            Height = 36,
             Font = Theme.Font(9.5f, FontStyle.Bold),
             CornerRadius = 10,
             NormalBackColor = Theme.Surface,
@@ -259,12 +205,14 @@ internal sealed class MainForm : BaseDarkForm
             Anchor = AnchorStyles.Left | AnchorStyles.Top
         };
         _settingsButton.Click += (_, _) => OpenSettings();
-        Add(_settingsButton);
+        buttonRow.Controls.Add(_settingsButton, 0, 0);
+        buttonRow.Controls.Add(new Label { Height = 1 }, 1, 0); // spacer
+        Add(buttonRow, 6);
 
         _playButton = new RoundedButton
         {
             Text = "ИГРАТЬ",
-            Height = 58,
+            Height = 52,
             Font = Theme.Font(14f, FontStyle.Bold),
             CornerRadius = 14,
             ShowPlayIcon = true,
@@ -272,7 +220,7 @@ internal sealed class MainForm : BaseDarkForm
             Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
         };
         _playButton.Click += PlayButton_Click;
-        Add(_playButton);
+        Add(_playButton, 8);
 
         // ---- 4. Status + progress ----
         _statusLabel = UiFactory.Label(
@@ -282,22 +230,22 @@ internal sealed class MainForm : BaseDarkForm
             Theme.Muted,
             Theme.Background);
         _statusLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        _statusLabel.Margin = new Padding(0, 10, 0, 0);
-        Add(_statusLabel);
+        _statusLabel.Margin = new Padding(0, 2, 0, 0);
+        Add(_statusLabel, 2);
 
         _progressBar = new ModernProgressBar
         {
-            Height = 10
+            Height = 8
         };
         _progressBar.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
-        _progressBar.Margin = new Padding(0, 6, 0, 0);
-        Add(_progressBar);
+        _progressBar.Margin = Padding.Empty;
+        Add(_progressBar, 0);
 
         // ---- 5. Footer ----
         var footer = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
-            Margin = new Padding(0, 10, 0, 0),
+            Margin = new Padding(0, 8, 0, 0),
             Padding = Padding.Empty
         };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -323,7 +271,7 @@ internal sealed class MainForm : BaseDarkForm
 
         footer.Controls.Add(versionLabel, 0, 0);
         footer.Controls.Add(creditsLabel, 1, 0);
-        Add(footer);
+        Add(footer, 0);
 
         ContentArea.ResumeLayout();
     }
@@ -331,26 +279,6 @@ internal sealed class MainForm : BaseDarkForm
     protected override async void OnShown(EventArgs e)
     {
         base.OnShown(e);
-
-        try
-        {
-            var hardware = await Task.Run(HardwareInfoService.Collect);
-            if (IsDisposed)
-                return;
-
-            _hardware = hardware;
-            ApplyRamDefaults();
-            ApplyRamLimit();
-        }
-        catch (Exception ex)
-        {
-            AppLog.Error("Hardware detection", ex);
-            if (!IsDisposed)
-            {
-                ApplyRamDefaults();
-                ApplyRamLimit();
-            }
-        }
 
         try
         {
@@ -363,84 +291,6 @@ internal sealed class MainForm : BaseDarkForm
             AppLog.Error("Config load", ex);
             if (!IsDisposed)
                 SetStatus("Не удалось загрузить список сборок", Theme.Danger);
-        }
-    }
-
-    private void ApplyRamDefaults()
-    {
-        int max = _maxRamMb;
-        int intended;
-
-        if (_isFirstLaunch)
-        {
-            intended = _hardware.TotalRamMb >= 12288 ? 8192 : 6144;
-        }
-        else
-        {
-            intended = _settings.RamMb > 0 ? _settings.RamMb : 4096;
-        }
-
-        int ram = NormalizeRam(intended);
-        _ramSlider.Value = Math.Min(ram, max);
-        UpdateRamValue();
-    }
-
-    private void ApplyRamLimit()
-    {
-        _maxRamMb = ComputeMaxRamMb(_hardware.TotalRamMb);
-
-        _ramSlider.Minimum = 1024;
-        _ramSlider.Maximum = _maxRamMb;
-        _ramSlider.Step = 512;
-        _ramSlider.Value = Math.Min(_ramSlider.Value, _maxRamMb);
-        UpdateRamValue();
-        UpdateRamWarning();
-
-        _ramWarningLabel.Text = _hardware.TotalRamMb > 0
-            ? $"Максимум {_maxRamMb:N0} МБ · всего {_hardware.TotalRamMb:N0} МБ (резерв системе)"
-            : $"Максимум {_maxRamMb:N0} МБ · объём ОЗУ определить не удалось";
-    }
-
-    private static int ComputeMaxRamMb(int totalMb)
-    {
-        if (totalMb <= 0)
-            return 8192;
-
-        int max = Math.Max(1024, totalMb - 2048);
-        max = (max / 512) * 512;
-        return Math.Max(1024, max);
-    }
-
-    private int NormalizeRam(int ramMb)
-    {
-        int value = (int)(Math.Round(ramMb / 512d) * 512d);
-        return Math.Clamp(value, 1024, _maxRamMb);
-    }
-
-    private void UpdateRamValue()
-    {
-        _ramValueLabel.Text = $"{_ramSlider.Value:N0} МБ";
-    }
-
-    private void UpdateRamWarning()
-    {
-        int ram = _ramSlider.Value;
-
-        if (ram < 6144)
-        {
-            _ramWarningLabel.ForeColor = Theme.Danger;
-            _ramWarningLabel.Text = "Выделено мало ОЗУ — возможны фризы и вылеты сборки.";
-        }
-        else if (ram <= 12288)
-        {
-            _ramWarningLabel.ForeColor = Theme.Success;
-            _ramWarningLabel.Text = "Оптимальный объем памяти.";
-        }
-        else
-        {
-            _ramWarningLabel.ForeColor = Theme.Warning;
-            _ramWarningLabel.Text =
-                "Выделение более 12 ГБ может ухудшить производительность из-за особенностей Java.";
         }
     }
 
@@ -487,7 +337,6 @@ internal sealed class MainForm : BaseDarkForm
     private void SetControlsEnabled(bool enabled)
     {
         _nickBox.Enabled = enabled;
-        _ramSlider.Enabled = enabled;
         _buildsBox.Enabled = enabled;
         _settingsButton.Enabled = enabled;
         _playButton.Enabled = enabled;
@@ -533,8 +382,8 @@ internal sealed class MainForm : BaseDarkForm
             return;
         }
 
+        // RAM is configured in Settings -> "Запуск и память"; value persisted in user_settings.json.
         _settings.Nickname = nickname;
-        _settings.RamMb = NormalizeRam(_ramSlider.Value);
 
         // Применяем default_jvm_args из сервера, если preset-версия выросла (в т.ч. первый запуск).
         bool presetApplied = SettingsService.ApplyJvmPresetIfNeeded(_config, _settings);
@@ -770,7 +619,6 @@ internal sealed class MainForm : BaseDarkForm
         _lifetimeCts.Cancel();
 
         _settings.Nickname = _nickBox.Text.Trim();
-        _settings.RamMb = NormalizeRam(_ramSlider.Value);
         SettingsService.TrySave(_settings, out _);
 
         base.OnFormClosing(e);

@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Linq;
 using System.Windows.Forms;
 using EscapeBook.Controls;
 using EscapeBook.Models;
@@ -13,8 +14,10 @@ internal sealed class SettingsForm : BaseDarkForm
     private RoundedTextBox _argsBox = null!;
     private RoundedTextBox _pathBox = null!;
     private Label _errorLabel = null!;
-    private FlowLayoutPanel _modsPanel = null!;
-    private readonly string _buildId;
+
+    private ModernSlider _ramSlider = null!;
+    private Label _ramValueLabel = null!;
+    private Label _ramWarningLabel = null!;
 
     public string CustomJvmArgs => _argsBox.Text.Trim();
     public string JavaPath => _pathBox.Text.Trim();
@@ -22,16 +25,14 @@ internal sealed class SettingsForm : BaseDarkForm
 
     private bool _resetArgsClicked;
     private bool _resetModsClicked;
+    private readonly string _buildId;
 
-    public SettingsForm(LauncherConfig config, UserSettings current) : base(new Size(620, 720))
+    public SettingsForm(LauncherConfig config, UserSettings current) : base(new Size(660, 720))
     {
         TitleText = "Настройки";
         ShowInTaskbar = false;
         CloseOnEscape = true;
         StartPosition = FormStartPosition.CenterParent;
-
-        // Allow scrolling when content exceeds the form (e.g. 125% DPI scaling).
-        ContentArea.AutoScroll = true;
 
         _config = config;
         _current = current.Clone();
@@ -46,81 +47,121 @@ internal sealed class SettingsForm : BaseDarkForm
     {
         ContentArea.SuspendLayout();
 
-        var root = new TableLayoutPanel
+        // ---- TabControl ----
+        var tabControl = new TabControl
         {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill,
             BackColor = Theme.Background,
-            Padding = new Padding(16, 12, 16, 12),
             Margin = Padding.Empty
         };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-        ContentArea.Controls.Add(root);
 
-        int row = 0;
-        void Add(Control c, int marginBottom = 10)
+        var tabLaunch = new TabPage("Запуск и память")
         {
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize, 100f));
-            root.SetRow(c, row);
-            root.SetColumn(c, 0);
-            root.Controls.Add(c);
+            BackColor = Theme.Background,
+            Margin = Padding.Empty
+        };
+        var tabMods = new TabPage("Оптимизация и визуал")
+        {
+            BackColor = Theme.Background,
+            Margin = Padding.Empty
+        };
+
+        tabControl.TabPages.Add(tabLaunch);
+        tabControl.TabPages.Add(tabMods);
+
+        // ===== Tab 1: Запуск и память =====
+        var tab1 = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.Transparent,
+            Margin = new Padding(14, 10, 14, 10),
+            Padding = Padding.Empty
+        };
+        tab1.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+
+        int t1 = 0;
+        void T1Add(Control c, int marginBottom = 8)
+        {
+            tab1.RowStyles.Add(new RowStyle(SizeType.AutoSize, 100f));
+            tab1.SetRow(c, t1);
+            tab1.SetColumn(c, 0);
+            tab1.Controls.Add(c);
             c.Margin = new Padding(0, 0, 0, marginBottom);
-            row++;
+            c.Dock = DockStyle.Top;
+            t1++;
         }
 
-        // ---- Header ----
-        var title = UiFactory.Label(
-            root,
-            "Параметры запуска",
-            Theme.Font(16f, FontStyle.Bold),
-            Theme.Text,
-            Theme.Background);
-        title.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        Add(title);
-
-        var subtitle = UiFactory.Label(
-            root,
-            "JVM-аргументы и путь к Java",
-            Theme.Font(8.5f),
-            Theme.Muted,
-            Theme.Background);
-        subtitle.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        Add(subtitle, 6);
-
-        // ---- JVM arguments ----
-        var argsLabel = UiFactory.Label(
-            root,
-            "ДОПОЛНИТЕЛЬНЫЕ JVM-АРГУМЕНТЫ",
+        var ramSection = UiFactory.Label(
+            tab1,
+            "ОПЕРАТИВНАЯ ПАМЯТЬ",
             Theme.Font(8.5f, FontStyle.Bold),
             Theme.Muted,
-            Theme.Background);
-        argsLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        Add(argsLabel, 2);
+            Color.Transparent);
+        ramSection.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+        T1Add(ramSection, 1);
+
+        _ramSlider = new ModernSlider
+        {
+            Minimum = 1024,
+            Maximum = 8192,
+            Step = 512,
+            Value = 4096,
+            Height = 30
+        };
+        _ramSlider.ValueChanged += (_, _) => UpdateRamWarning();
+        T1Add(_ramSlider, 4);
+
+        _ramValueLabel = UiFactory.Label(
+            tab1,
+            "4096 МБ",
+            Theme.Font(10f, FontStyle.Bold),
+            Theme.Accent,
+            Color.Transparent);
+        _ramValueLabel.Anchor = AnchorStyles.Right | AnchorStyles.Top;
+        _ramValueLabel.TextAlign = ContentAlignment.MiddleRight;
+        T1Add(_ramValueLabel, 2);
+
+        _ramWarningLabel = UiFactory.Label(
+            tab1,
+            "Оптимальный объем памяти.",
+            Theme.Font(8.5f),
+            Theme.Success,
+            Color.Transparent);
+        _ramWarningLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+        T1Add(_ramWarningLabel, 8);
+
+        var jvmSection = UiFactory.Label(
+            tab1,
+            "JVM-АРГУМЕНТЫ ЗАПУСКА",
+            Theme.Font(8.5f, FontStyle.Bold),
+            Theme.Muted,
+            Color.Transparent);
+        jvmSection.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+        T1Add(jvmSection, 1);
 
         _argsBox = new RoundedTextBox
         {
             Multiline = true,
-            Height = 120,
+            Height = 110,
             Text = _current.CustomJvmArgs
         };
         _argsBox.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
-        Add(_argsBox, 6);
+        T1Add(_argsBox, 6);
 
         var ramNote = UiFactory.Label(
-            root,
-            "Память задаётся ползунком на главном экране: -Xmx и -Xms из этих аргументов игнорируются.",
+            tab1,
+            "Флаги -Xmx и -Xms из этого поля игнорируются: память задаётся ползунком выше.",
             Theme.Font(8.5f),
             Theme.Muted,
-            Theme.Background);
+            Color.Transparent);
         ramNote.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        Add(ramNote, 6);
+        T1Add(ramNote, 8);
 
         var resetArgs = new RoundedButton
         {
             Text = "Сбросить аргументы по умолчанию",
             Width = 250,
-            Height = 36,
+            Height = 34,
             Font = Theme.Font(9f, FontStyle.Bold),
             CornerRadius = 8,
             NormalBackColor = Theme.Surface,
@@ -137,17 +178,16 @@ internal sealed class SettingsForm : BaseDarkForm
             _resetArgsClicked = true;
             _errorLabel.Visible = false;
         };
-        Add(resetArgs, 10);
+        T1Add(resetArgs, 10);
 
-        // ---- Java path ----
-        var javaLabel = UiFactory.Label(
-            root,
+        var javaSection = UiFactory.Label(
+            tab1,
             "ПУТЬ К javaw.exe",
             Theme.Font(8.5f, FontStyle.Bold),
             Theme.Muted,
-            Theme.Background);
-        javaLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        Add(javaLabel, 2);
+            Color.Transparent);
+        javaSection.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+        T1Add(javaSection, 1);
 
         var javaRow = new TableLayoutPanel
         {
@@ -183,35 +223,49 @@ internal sealed class SettingsForm : BaseDarkForm
         };
         browseButton.Click += (_, _) => BrowseForJava();
         javaRow.Controls.Add(browseButton, 1, 0);
-        Add(javaRow, 6);
+        T1Add(javaRow, 0);
 
-        var autoNote = UiFactory.Label(
-            root,
-            "Пусто — автоопределение, включая рантайм Mojang, который скачивает CmlLib.",
-            Theme.Font(8.5f),
-            Theme.Muted,
-            Theme.Background);
-        autoNote.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        Add(autoNote, 12);
+        tabLaunch.Controls.Add(tab1);
 
-        // ---- Optimization & visual mods ----
-        var sectionHeader = UiFactory.Label(
-            root,
+        // ===== Tab 2: Оптимизация и визуал =====
+        var tab2 = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.Transparent,
+            Margin = new Padding(14, 10, 14, 10),
+            Padding = Padding.Empty
+        };
+        tab2.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+
+        int t2 = 0;
+        void T2Add(Control c, int marginBottom = 8)
+        {
+            tab2.RowStyles.Add(new RowStyle(SizeType.AutoSize, 100f));
+            tab2.SetRow(c, t2);
+            tab2.SetColumn(c, 0);
+            tab2.Controls.Add(c);
+            c.Margin = new Padding(0, 0, 0, marginBottom);
+            c.Dock = DockStyle.Top;
+            t2++;
+        }
+
+        var modsSection = UiFactory.Label(
+            tab2,
             "ОПТИМИЗАЦИЯ И ВИЗУАЛ",
             Theme.Font(8.5f, FontStyle.Bold),
             Theme.Accent,
-            Theme.Background);
-        sectionHeader.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        Add(sectionHeader, 2);
+            Color.Transparent);
+        modsSection.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+        T2Add(modsSection, 1);
 
-        var sectionNote = UiFactory.Label(
-            root,
+        var modsNote = UiFactory.Label(
+            tab2,
             "Отключение mods-файлов через суффикс .disabled (состояние сохраняется между обновлениями сборки).",
             Theme.Font(8.5f),
             Theme.Muted,
-            Theme.Background);
-        sectionNote.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        Add(sectionNote, 6);
+            Color.Transparent);
+        modsNote.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+        T2Add(modsNote, 6);
 
         var modsBar = new TableLayoutPanel
         {
@@ -239,54 +293,44 @@ internal sealed class SettingsForm : BaseDarkForm
         };
         resetMods.Click += ResetMods_Click;
         modsBar.Controls.Add(resetMods, 0, 0);
-        modsBar.Controls.Add(new Label { Height = 1 }, 1, 0); // spacer
-        Add(modsBar, 6);
+        modsBar.Controls.Add(new Label { Height = 1 }, 1, 0);
+        T2Add(modsBar, 6);
 
-        _modsPanel = new FlowLayoutPanel
+        var modsPanel = new Panel
         {
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
+            Dock = DockStyle.Fill,
             AutoScroll = true,
             BackColor = Theme.Background,
-            Height = 260,
-            Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
         };
-        _modsPanel.Resize += (_, _) => RefreshModCardWidths();
-        Add(_modsPanel, 10);
+        modsPanel.Resize += (_, _) => RefreshModCardWidths(modsPanel);
+        T2Add(modsPanel, 0);
 
         if (_config.OptionalMods.Count == 0)
         {
             var empty = UiFactory.Label(
-                _modsPanel,
+                modsPanel,
                 "Дополнительные моды не настроены на сервере.",
                 Theme.Font(9f),
                 Theme.Muted,
                 Theme.Background);
             empty.AutoSize = false;
-            empty.Width = _modsPanel.ClientSize.Width > 0 ? _modsPanel.ClientSize.Width - 20 : 500;
+            empty.Width = modsPanel.ClientSize.Width > 0 ? modsPanel.ClientSize.Width - 20 : 500;
+            empty.Location = new Point(0, 0);
         }
 
-        BuildModCards();
+        BuildModCards(modsPanel);
+        tabMods.Controls.Add(tab2);
 
-        // ---- Error label ----
-        _errorLabel = UiFactory.Label(
-            root,
-            string.Empty,
-            Theme.Font(8.5f),
-            Theme.Danger,
-            Theme.Background);
-        _errorLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        _errorLabel.Visible = false;
-        Add(_errorLabel, 12);
-
-        // ---- Action buttons ----
-        var buttonBar = new FlowLayoutPanel
+        // ===== Bottom action buttons (Save / Cancel) =====
+        var buttonBar = new Panel
         {
-            FlowDirection = FlowDirection.RightToLeft,
-            Dock = DockStyle.Top,
-            Height = 44,
+            Dock = DockStyle.Bottom,
+            Height = 52,
+            BackColor = Theme.Background,
             Margin = Padding.Empty,
-            Padding = Padding.Empty
+            Padding = new Padding(14, 6, 14, 10)
         };
 
         var saveButton = new RoundedButton
@@ -296,7 +340,8 @@ internal sealed class SettingsForm : BaseDarkForm
             Height = 40,
             Font = Theme.Font(9.5f, FontStyle.Bold),
             CornerRadius = 10,
-            ForeColor = Theme.Text
+            ForeColor = Theme.Text,
+            Anchor = AnchorStyles.Right | AnchorStyles.Top
         };
         saveButton.Click += SaveAndClose;
         buttonBar.Controls.Add(saveButton);
@@ -313,7 +358,8 @@ internal sealed class SettingsForm : BaseDarkForm
             PressedBackColor = Color.FromArgb(19, 22, 29),
             BorderColor = Theme.Border,
             BorderSize = 1,
-            ForeColor = Theme.Text
+            ForeColor = Theme.Text,
+            Anchor = AnchorStyles.Right | AnchorStyles.Top
         };
         cancelButton.Click += (_, _) =>
         {
@@ -321,16 +367,19 @@ internal sealed class SettingsForm : BaseDarkForm
             Close();
         };
         buttonBar.Controls.Add(cancelButton);
-        Add(buttonBar, 0);
+
+        ContentArea.Controls.Add(tabControl);
+        ContentArea.Controls.Add(buttonBar);
 
         ContentArea.ResumeLayout();
     }
 
-    private void BuildModCards()
+    private void BuildModCards(Panel modsPanel)
     {
-        _modsPanel.Controls.Clear();
+        modsPanel.Controls.Clear();
 
-        foreach (var mod in _config.OptionalMods)
+        // Add in reverse order with Dock.Top so they stack top-to-bottom in config order.
+        foreach (var mod in Enumerable.Reverse(_config.OptionalMods))
         {
             var state = OptionalModsService.GetState(mod, _buildId);
 
@@ -341,7 +390,7 @@ internal sealed class SettingsForm : BaseDarkForm
                 BorderColor = Theme.Border,
                 BorderSize = 1,
                 Height = 78,
-                Width = _modsPanel.ClientSize.Width > 0 ? _modsPanel.ClientSize.Width - 20 : 560,
+                Dock = DockStyle.Top,
                 Margin = new Padding(0, 0, 0, 8),
                 Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
             };
@@ -363,13 +412,9 @@ internal sealed class SettingsForm : BaseDarkForm
             {
                 Checked = state.Enabled,
                 Enabled = state.HasFiles,
-                Anchor = AnchorStyles.Left,
+                Anchor = AnchorStyles.Left
             };
             toggle.Tag = mod;
-            toggle.CheckedChanged += (_, _) =>
-            {
-                // Reflect immediately; persisted on Save.
-            };
 
             var textPanel = new TableLayoutPanel
             {
@@ -404,7 +449,7 @@ internal sealed class SettingsForm : BaseDarkForm
                 Anchor = AnchorStyles.Left | AnchorStyles.Top,
                 AutoSize = false,
                 Height = 30,
-                MaximumSize = new Size(420, 0)
+                MaximumSize = new Size(460, 0)
             };
 
             if (!state.HasFiles)
@@ -419,16 +464,14 @@ internal sealed class SettingsForm : BaseDarkForm
             inner.Controls.Add(textPanel, 1, 0);
             card.Controls.Add(inner);
 
-            _modsPanel.Controls.Add(card);
+            modsPanel.Controls.Add(card);
         }
     }
 
-    private void RefreshModCardWidths()
+    private void RefreshModCardWidths(Panel modsPanel)
     {
-        int width = _modsPanel.ClientSize.Width - 20;
-        if (width < 100)
-            width = 100;
-        foreach (Control c in _modsPanel.Controls)
+        int width = Math.Max(1, modsPanel.ClientSize.Width - 20);
+        foreach (Control c in modsPanel.Controls)
         {
             if (c is RoundedPanel card)
                 card.Width = width;
@@ -441,21 +484,24 @@ internal sealed class SettingsForm : BaseDarkForm
         {
             int changed = OptionalModsService.ApplyDefaults(_config.OptionalMods, _buildId);
             _resetModsClicked = true;
-            BuildModCards(); // refresh checkbox states from disk
+            // Rebuild cards to reflect the new on-disk state.
+            foreach (Control c in ContentArea.Controls)
+            {
+                if (c is TabControl tc && tc.TabPages.Count > 1)
+                {
+                    var modsPanel = tc.TabPages[1].Controls[0] as TableLayoutPanel;
+                    var panel = modsPanel?.Controls.OfType<Panel>().FirstOrDefault();
+                    if (panel != null)
+                        BuildModCards(panel);
+                }
+            }
             _errorLabel.Visible = false;
-            SetStatus($"Применены значения по умолчанию (изменено файлов: {changed})", Theme.Muted);
         }
         catch (Exception ex)
         {
             AppLog.Error("Reset mods to defaults", ex);
             ShowValidationError("Не удалось применить значения по умолчанию.");
         }
-    }
-
-    private void SetStatus(string text, Color color)
-    {
-        // Status is owned by the MainForm; keep a local trace instead.
-        AppLog.Write(text);
     }
 
     private void BrowseForJava()
@@ -480,6 +526,28 @@ internal sealed class SettingsForm : BaseDarkForm
         {
             _pathBox.Text = dialog.FileName;
             _errorLabel.Visible = false;
+        }
+    }
+
+    private void UpdateRamWarning()
+    {
+        int ram = _ramSlider.Value;
+
+        if (ram < 6144)
+        {
+            _ramWarningLabel.ForeColor = Theme.Danger;
+            _ramWarningLabel.Text = "Выделено мало ОЗУ — возможны фризы и вылеты сборки.";
+        }
+        else if (ram <= 12288)
+        {
+            _ramWarningLabel.ForeColor = Theme.Success;
+            _ramWarningLabel.Text = "Оптимальный объем памяти.";
+        }
+        else
+        {
+            _ramWarningLabel.ForeColor = Theme.Warning;
+            _ramWarningLabel.Text =
+                "Выделение более 12 ГБ может ухудшить производительность из-за особенностей Java.";
         }
     }
 
@@ -516,15 +584,29 @@ internal sealed class SettingsForm : BaseDarkForm
         // Apply optional mod enable/disable to the selected instance mods folder.
         try
         {
-            foreach (Control card in _modsPanel.Controls)
+            // Find the mods panel on tab 2.
+            Panel? modsPanel = null;
+            foreach (Control c in ContentArea.Controls)
             {
-                if (card.Controls[0] is not TableLayoutPanel inner)
-                    continue;
-                if (inner.Controls[0] is not ToggleSwitch toggle)
-                    continue;
+                if (c is TabControl tc && tc.TabPages.Count > 1)
+                {
+                    var layout = tc.TabPages[1].Controls[0] as TableLayoutPanel;
+                    modsPanel = layout?.Controls.OfType<Panel>().FirstOrDefault();
+                }
+            }
 
-                var mod = (OptionalModInfo)toggle.Tag!;
-                OptionalModsService.SetEnabled(mod, _buildId, toggle.Checked);
+            if (modsPanel != null)
+            {
+                foreach (Control card in modsPanel.Controls)
+                {
+                    if (card.Controls[0] is not TableLayoutPanel inner)
+                        continue;
+                    if (inner.Controls[0] is not ToggleSwitch toggle)
+                        continue;
+
+                    var mod = (OptionalModInfo)toggle.Tag!;
+                    OptionalModsService.SetEnabled(mod, _buildId, toggle.Checked);
+                }
             }
 
             if (_resetModsClicked)

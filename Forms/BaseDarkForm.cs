@@ -25,7 +25,7 @@ internal class BaseDarkForm : Form
         BackColor = Theme.Background;
         ForeColor = Theme.Text;
         Font = Theme.Font(9f);
-        AutoScaleMode = AutoScaleMode.Dpi;
+        AutoScaleMode = AutoScaleMode.Font;
         ClientSize = clientSize;
         DoubleBuffered = true;
         KeyPreview = true;
