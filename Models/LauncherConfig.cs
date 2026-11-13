@@ -1,0 +1,104 @@
+using System.Text.Json.Serialization;
+
+namespace EscapeBook.Models;
+
+/// <summary>
+/// Remote EscapeBook launcher configuration (config.json on GitHub).
+/// </summary>
+internal sealed class LauncherConfig
+{
+    [JsonPropertyName("jvm_preset_version")]
+    public int JvmPresetVersion { get; set; }
+
+    [JsonPropertyName("default_jvm_args")]
+    public string DefaultJvmArgs { get; set; } = string.Empty;
+
+    [JsonPropertyName("discord_webhook_url")]
+    public string DiscordWebhookUrl { get; set; } = string.Empty;
+
+    [JsonPropertyName("banner_url")]
+    public string BannerUrl { get; set; } = string.Empty;
+
+    [JsonPropertyName("banner_hash")]
+    public string BannerHash { get; set; } = string.Empty;
+
+    [JsonPropertyName("builds")]
+    public List<BuildInfo> Builds { get; set; } = new();
+
+    [JsonPropertyName("optional_mods")]
+    public List<OptionalModInfo> OptionalMods { get; set; } = new();
+
+    public void NormalizeAndValidate()
+    {
+        JvmPresetVersion = Math.Max(0, JvmPresetVersion);
+        DefaultJvmArgs = DefaultJvmArgs?.Trim() ?? string.Empty;
+        DiscordWebhookUrl = DiscordWebhookUrl?.Trim() ?? string.Empty;
+        BannerUrl = BannerUrl?.Trim() ?? string.Empty;
+        BannerHash = BannerHash?.Trim().ToLowerInvariant() ?? string.Empty;
+
+        if (Builds == null || Builds.Count == 0)
+            throw new InvalidDataException("В конфигурации нет ни одной сборки (builds).");
+
+        var normalizedBuilds = new List<BuildInfo>();
+        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var build in Builds)
+        {
+            if (build == null)
+                continue;
+
+            build.Id = build.Id?.Trim() ?? string.Empty;
+            build.Name = string.IsNullOrWhiteSpace(build.Name) ? build.Id : build.Name.Trim();
+            build.McVersion = build.McVersion?.Trim() ?? string.Empty;
+            build.Version = string.IsNullOrWhiteSpace(build.Version) ? "0" : build.Version.Trim();
+            build.ClientZipUrl = build.ClientZipUrl?.Trim() ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(build.Id))
+                throw new InvalidDataException("У сборки не заполнено поле id.");
+
+            if (build.Id.Length > 64 ||
+                !build.Id.All(c => char.IsLetterOrDigit(c) || c is '_' or '-'))
+            {
+                throw new InvalidDataException(
+                    $"Недопустимый id сборки \"{build.Id}\". Используйте латиницу, цифры, _ и -.");
+            }
+
+            if (string.IsNullOrWhiteSpace(build.McVersion))
+                throw new InvalidDataException($"У сборки \"{build.Id}\" не заполнено поле mc_version.");
+
+            if (ids.Add(build.Id))
+                normalizedBuilds.Add(build);
+        }
+
+        if (normalizedBuilds.Count == 0)
+            throw new InvalidDataException("В конфигурации нет корректных сборок (builds).");
+
+        Builds = normalizedBuilds;
+
+        var normalizedMods = new List<OptionalModInfo>();
+
+        if (OptionalMods != null)
+        {
+            foreach (var mod in OptionalMods)
+            {
+                if (mod == null)
+                    continue;
+
+                mod.Name = mod.Name?.Trim() ?? string.Empty;
+                mod.Description = mod.Description?.Trim() ?? string.Empty;
+                mod.FilePrefixes = (mod.FilePrefixes ?? new List<string>())
+                    .Where(prefix => !string.IsNullOrWhiteSpace(prefix))
+                    .Select(prefix => prefix.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (string.IsNullOrWhiteSpace(mod.Name) || mod.FilePrefixes.Count == 0)
+                    continue;
+
+                normalizedMods.Add(mod);
+            }
+        }
+
+        OptionalMods = normalizedMods;
+    }
+}
