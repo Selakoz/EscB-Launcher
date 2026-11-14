@@ -15,6 +15,7 @@ internal sealed class ClientUpdater
     public async Task UpdateAsync(
         BuildInfo build,
         IReadOnlyList<OptionalModInfo> optionalMods,
+        IReadOnlyDictionary<string, bool>? playerModStates,
         IProgress<LaunchProgress> progress,
         CancellationToken cancellationToken)
     {
@@ -126,19 +127,27 @@ internal sealed class ClientUpdater
         progress.Report(new LaunchProgress(48, $"Сборка «{build.Name}» установлена"));
         AppLog.Write($"Client updated: build={build.Id}, version={build.Version}");
 
-        // First-time instance setup: align existing mod files with enabled_by_default defaults.
-        if (!instanceExisted)
+        // Apply mod states: the player's explicit choice wins, otherwise enabled_by_default.
+        try
         {
-            try
+            int changed = 0;
+
+            foreach (var mod in optionalMods)
             {
-                int changed = OptionalModsService.ApplyDefaults(optionalMods, build.Id);
-                if (changed > 0)
-                    AppLog.Write($"Applied default mod states: build={build.Id}, changed={changed}");
+                bool desired = playerModStates is not null &&
+                               playerModStates.TryGetValue(mod.Name, out bool playerState)
+                    ? playerState
+                    : mod.EnabledByDefault;
+
+                changed += OptionalModsService.SetEnabled(mod, build.Id, desired);
             }
-            catch (Exception ex)
-            {
-                AppLog.Error("Apply default mods", ex);
-            }
+
+            if (changed > 0)
+                AppLog.Write($"Applied mod states: build={build.Id}, changed={changed}");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Apply mod states", ex);
         }
     }
 

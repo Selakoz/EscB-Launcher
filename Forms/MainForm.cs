@@ -10,38 +10,50 @@ namespace EscapeBook.Forms;
 
 internal sealed class MainForm : BaseDarkForm
 {
+    private const int HorizontalMargin = 32;
+    private const int BottomMargin = 24;
+
     private static readonly Regex NicknameRegex =
         new("^[A-Za-z0-9_]{3,16}$", RegexOptions.Compiled);
 
     private readonly LauncherService _launcherService = new();
     private readonly CancellationTokenSource _lifetimeCts = new();
+    private readonly SettingsSession _session;
 
     private LauncherConfig? _config;
     private RoundedTextBox _nickBox = null!;
-    private DarkComboBox _buildsBox = null!;
+    private RoundedComboBox _buildsBox = null!;
     private Label _statusLabel = null!;
     private ModernProgressBar _progressBar = null!;
     private RoundedButton _playButton = null!;
     private RoundedButton _settingsButton = null!;
+    private PictureBox _bannerBox = null!;
 
     private readonly UserSettings _settings;
+    private readonly bool _isFirstLaunch;
     private BuildInfo _selectedBuild = new();
     private Process? _gameProcess;
     private bool _busy;
+    private bool _suppressBuildEvents;
 
-    public MainForm() : base(new Size(460, 480), allowMinimize: true)
+    public MainForm() : base(new Size(460, 510), allowMinimize: true)
     {
         TitleText = "EscB Client";
+        Font = new Font("Segoe UI", 10f);
 
-        // Clean fixed-size OS window (not borderless, not DPI-scaled).
-        this.AutoScaleMode = AutoScaleMode.Font;
+        // Standard OS window frame (no custom title bar).
         this.FormBorderStyle = FormBorderStyle.FixedSingle;
         this.MaximizeBox = false;
-        this.TitleBarPanel.Visible = false;
+        this.MinimizeBox = true;
+        this.AutoScaleMode = AutoScaleMode.Font;
+        CollapseTitleBar();
 
+        _isFirstLaunch = !File.Exists(LauncherPaths.SettingsFile);
         _settings = SettingsService.Load();
+        _session = new SettingsSession(_settings);
 
         BuildLayout();
+        WireAutoSave();
     }
 
     private void BuildLayout()
@@ -52,47 +64,40 @@ internal sealed class MainForm : BaseDarkForm
         {
             Dock = DockStyle.Fill,
             BackColor = Theme.Background,
-            Padding = new Padding(12, 8, 12, 8),
+            Padding = new Padding(HorizontalMargin, 10, HorizontalMargin, BottomMargin),
             Margin = Padding.Empty
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
         ContentArea.Controls.Add(root);
 
         int row = 0;
-        void Add(Control c, int marginBottom = 8)
+        void Add(Control c, RowStyle style)
         {
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize, 100f));
+            root.RowStyles.Add(style);
             root.SetRow(c, row);
             root.SetColumn(c, 0);
             root.Controls.Add(c);
-            c.Margin = new Padding(0, 0, 0, marginBottom);
             row++;
         }
 
-        // ---- 1. Banner centered at top (380x95, 4:1) ----
-        var bannerHost = new TableLayoutPanel
+        // ---- 1. Banner (centered horizontally, 380x95 => 4:1) ----
+        var bannerHost = new Panel
         {
             Dock = DockStyle.Top,
-            Height = 115,
+            Height = 105,
             BackColor = Theme.Background,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
+            Margin = new Padding(0, 0, 0, 8)
         };
-        bannerHost.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25f));
-        bannerHost.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-        bannerHost.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25f));
-        bannerHost.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
 
-        var banner = new PictureBox
+        _bannerBox = new PictureBox
         {
             Size = new Size(380, 95),
             SizeMode = PictureBoxSizeMode.Zoom,
             BackColor = Theme.Background,
-            Image = Branding.LoadBanner(),
-            Anchor = AnchorStyles.None
+            Image = Branding.LoadBanner()
         };
-        bannerHost.Controls.Add(banner, 1, 0);
-        Add(bannerHost, 10);
+        bannerHost.Controls.Add(_bannerBox);
+        Add(bannerHost, new RowStyle(SizeType.Absolute, 105f));
 
         // ---- 2. Card: nickname + build version ----
         var card = new RoundedPanel
@@ -102,8 +107,8 @@ internal sealed class MainForm : BaseDarkForm
             BorderColor = Theme.Border,
             BorderSize = 1,
             Dock = DockStyle.Top,
-            Height = 140,
-            Margin = Padding.Empty,
+            Height = 148,
+            Margin = new Padding(0, 0, 0, 8),
             Padding = new Padding(16)
         };
 
@@ -117,7 +122,7 @@ internal sealed class MainForm : BaseDarkForm
         inner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
 
         int r = 0;
-        void AddInner(Control c, int marginBottom = 6)
+        void AddInner(Control c, int marginBottom)
         {
             inner.RowStyles.Add(new RowStyle(SizeType.AutoSize, 100f));
             inner.SetRow(c, r);
@@ -131,51 +136,48 @@ internal sealed class MainForm : BaseDarkForm
         var nickLabel = UiFactory.Label(
             inner,
             "НИКНЕЙМ",
-            Theme.Font(8.5f, FontStyle.Bold),
+            new Font("Segoe UI", 9f, FontStyle.Bold),
             Theme.Muted,
             Theme.Surface);
         nickLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        AddInner(nickLabel, 1);
+        AddInner(nickLabel, 4);
 
         _nickBox = new RoundedTextBox
         {
             PlaceholderText = "Введите игровой никнейм",
             Text = _settings.Nickname,
-            Height = 40
+            Height = 40,
+            Font = new Font("Segoe UI", 10f)
         };
         _nickBox.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
         _nickBox.InnerTextBox.KeyDown += NickBox_KeyDown;
-        AddInner(_nickBox, 8);
+        AddInner(_nickBox, 12);
 
         var buildLabel = UiFactory.Label(
             inner,
             "ВЕРСИЯ СБОРКИ",
-            Theme.Font(8.5f, FontStyle.Bold),
+            new Font("Segoe UI", 9f, FontStyle.Bold),
             Theme.Muted,
             Theme.Surface);
         buildLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        AddInner(buildLabel, 1);
+        AddInner(buildLabel, 4);
 
-        _buildsBox = new DarkComboBox
+        _buildsBox = new RoundedComboBox
         {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Height = 34
+            Height = 36,
+            Font = new Font("Segoe UI", 10f),
+            Formatter = item => (item as BuildInfo)?.Name ?? item?.ToString() ?? string.Empty
         };
         _buildsBox.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
-        _buildsBox.SelectedIndexChanged += (_, _) =>
-        {
-            if (_buildsBox.SelectedItem is BuildInfo build)
-            {
-                _selectedBuild = build;
-                _settings.SelectedBuildId = build.Id;
-            }
-        };
         AddInner(_buildsBox, 0);
 
         card.Controls.Add(inner);
-        Add(card, 10);
+        Add(card, new RowStyle(SizeType.AutoSize));
 
-        // ---- 3. Buttons: Settings + Play ----
+        // ---- 3. Flexible spacer ----
+        Add(new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty }, new RowStyle(SizeType.Percent, 100f));
+
+        // ---- 4. Settings button ----
         var buttonRow = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
@@ -184,17 +186,16 @@ internal sealed class MainForm : BaseDarkForm
                 new ColumnStyle(SizeType.AutoSize),
                 new ColumnStyle(SizeType.Percent, 100f)
             },
-            RowStyles = { new RowStyle(SizeType.Absolute, 40f) },
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
+            RowStyles = { new RowStyle(SizeType.Absolute, 38f) },
+            Margin = new Padding(0, 0, 0, 8)
         };
 
         _settingsButton = new RoundedButton
         {
             Text = "Настройки",
-            Width = 110,
+            Width = 120,
             Height = 36,
-            Font = Theme.Font(9.5f, FontStyle.Bold),
+            Font = new Font("Segoe UI", 10f, FontStyle.Bold),
             CornerRadius = 10,
             NormalBackColor = Theme.Surface,
             HoverBackColor = Theme.SurfaceHover,
@@ -206,74 +207,90 @@ internal sealed class MainForm : BaseDarkForm
         };
         _settingsButton.Click += (_, _) => OpenSettings();
         buttonRow.Controls.Add(_settingsButton, 0, 0);
-        buttonRow.Controls.Add(new Label { Height = 1 }, 1, 0); // spacer
-        Add(buttonRow, 6);
+        buttonRow.Controls.Add(new Label { Height = 1 }, 1, 0);
+        Add(buttonRow, new RowStyle(SizeType.Absolute, 38f));
 
-        _playButton = new RoundedButton
-        {
-            Text = "ИГРАТЬ",
-            Height = 52,
-            Font = Theme.Font(14f, FontStyle.Bold),
-            CornerRadius = 14,
-            ShowPlayIcon = true,
-            ForeColor = Theme.Text,
-            Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
-        };
-        _playButton.Click += PlayButton_Click;
-        Add(_playButton, 8);
-
-        // ---- 4. Status + progress ----
+        // ---- 5. Status + progress ----
         _statusLabel = UiFactory.Label(
             root,
             "Готов к запуску",
-            Theme.Font(9.5f),
+            new Font("Segoe UI", 9.5f),
             Theme.Muted,
             Theme.Background);
         _statusLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        _statusLabel.Margin = new Padding(0, 2, 0, 0);
-        Add(_statusLabel, 2);
+        _statusLabel.Margin = new Padding(0, 0, 0, 4);
+        Add(_statusLabel, new RowStyle(SizeType.Absolute, 20f));
 
         _progressBar = new ModernProgressBar
         {
             Height = 8
         };
         _progressBar.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
-        _progressBar.Margin = Padding.Empty;
-        Add(_progressBar, 0);
-
-        // ---- 5. Footer ----
-        var footer = new TableLayoutPanel
+        _progressBar.Margin = new Padding(0, 0, 0, 10);
+        Add(_progressBar, new RowStyle(SizeType.Absolute, 18f));
+        // ---- 6. Play button (24px below it is the window edge) ----
+        _playButton = new RoundedButton
         {
-            Dock = DockStyle.Top,
-            Margin = new Padding(0, 8, 0, 0),
-            Padding = Padding.Empty
+            Text = "ИГРАТЬ",
+            Height = 58,
+            Font = new Font("Segoe UI", 14f, FontStyle.Bold),
+            CornerRadius = 14,
+            ShowPlayIcon = true,
+            ForeColor = Theme.Text,
+            Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
         };
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-        footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
-
-        var versionLabel = UiFactory.Label(
-            footer,
-            "v2.1.0",
-            Theme.Font(8f),
-            Theme.Muted,
-            Theme.Background);
-        versionLabel.Anchor = AnchorStyles.Left;
-
-        var creditsLabel = UiFactory.Label(
-            footer,
-            "CmlLib.Core 4.1.0 · .NET 8",
-            Theme.Font(8f),
-            Theme.Muted,
-            Theme.Background);
-        creditsLabel.Anchor = AnchorStyles.Right;
-        creditsLabel.TextAlign = ContentAlignment.MiddleRight;
-
-        footer.Controls.Add(versionLabel, 0, 0);
-        footer.Controls.Add(creditsLabel, 1, 0);
-        Add(footer, 0);
+        _playButton.Click += PlayButton_Click;
+        _playButton.Margin = Padding.Empty;
+        Add(_playButton, new RowStyle(SizeType.Absolute, 58f));
 
         ContentArea.ResumeLayout();
+
+        CenterBanner();
+    }
+
+    /// <summary>
+    /// Keeps the banner strictly centered horizontally and vertically.
+    /// </summary>
+    private void CenterBanner()
+    {
+        if (_bannerBox is null || _bannerBox.Parent is null)
+            return;
+
+        _bannerBox.Left = (this.ClientSize.Width - _bannerBox.Width) / 2;
+
+        var host = _bannerBox.Parent;
+        _bannerBox.Top = Math.Max(0, (host.Height - _bannerBox.Height) / 2);
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        CenterBanner();
+    }
+
+    /// <summary>
+    /// Persists every setting change instantly.
+    /// </summary>
+    private void WireAutoSave()
+    {
+        _nickBox.TextChanged += (_, _) =>
+        {
+            _settings.Nickname = _nickBox.Text;
+            _session.SaveSoon();
+        };
+
+        _buildsBox.SelectedIndexChanged += (_, _) =>
+        {
+            if (_suppressBuildEvents)
+                return;
+
+            if (_buildsBox.SelectedItem is BuildInfo build)
+            {
+                _selectedBuild = build;
+                _settings.SelectedBuildId = build.Id;
+                _session.Save();
+            }
+        };
     }
 
     protected override async void OnShown(EventArgs e)
@@ -296,36 +313,23 @@ internal sealed class MainForm : BaseDarkForm
 
     private void PopulateBuilds()
     {
-        _buildsBox.Items.Clear();
-
         if (_config == null || _config.Builds.Count == 0)
         {
             SetStatus("В конфиге нет сборок", Theme.Danger);
             return;
         }
 
-        BuildInfo? selectBuild = null;
+        _suppressBuildEvents = true;
+        _buildsBox.SetItems(
+            _config.Builds,
+            _settings.SelectedBuildId,
+            item => (item as BuildInfo)?.Id);
 
-        foreach (var build in _config.Builds)
-        {
-            _buildsBox.Items.Add(build);
-
-            if (string.Equals(build.Id, _settings.SelectedBuildId, StringComparison.OrdinalIgnoreCase))
-                selectBuild = build;
-        }
-
-        if (selectBuild != null)
-            _buildsBox.SelectedItem = selectBuild;
-        else if (_buildsBox.Items.Count > 0)
-        {
-            _buildsBox.SelectedIndex = 0;
-            _selectedBuild = (BuildInfo)_buildsBox.Items[0]!;
+        _selectedBuild = _buildsBox.SelectedItem as BuildInfo ?? new BuildInfo();
+        if (_selectedBuild.Id.Length > 0)
             _settings.SelectedBuildId = _selectedBuild.Id;
-        }
-        else
-        {
-            _selectedBuild = new BuildInfo();
-        }
+
+        _suppressBuildEvents = false;
     }
 
     private void SetStatus(string text, Color color)
@@ -382,17 +386,17 @@ internal sealed class MainForm : BaseDarkForm
             return;
         }
 
-        // RAM is configured in Settings -> "Запуск и память"; value persisted in user_settings.json.
         _settings.Nickname = nickname;
 
-        // Применяем default_jvm_args из сервера, если preset-версия выросла (в т.ч. первый запуск).
+        // Apply default_jvm_args from the server only when the preset version grew.
         bool presetApplied = SettingsService.ApplyJvmPresetIfNeeded(_config, _settings);
 
-        if (!SettingsService.TrySave(_settings, out string? saveError))
-            AppLog.Write("Settings save warning: " + saveError);
+        _session.Save();
 
         if (presetApplied)
+        {
             SetStatus("Аргументы обновлены по пресету сервера", Theme.Muted);
+        }
 
         _busy = true;
         SetControlsEnabled(false);
@@ -539,24 +543,15 @@ internal sealed class MainForm : BaseDarkForm
         if (_busy || _gameProcess != null || _config == null)
             return;
 
-        using var form = new SettingsForm(_config, _settings);
-        if (form.ShowDialog(this) != DialogResult.OK)
-            return;
-
-        _settings.CustomJvmArgs = form.CustomJvmArgs;
-        _settings.JavaPath = form.JavaPath;
-
-        if (form.AppliedJvmPresetVersionOnSave.HasValue)
-            _settings.AppliedJvmPresetVersion = form.AppliedJvmPresetVersionOnSave.Value;
-
-        if (SettingsService.TrySave(_settings, out string? error))
+        try
         {
-            SetStatus("Настройки сохранены", Theme.Muted);
+            using var form = new SettingsForm(_config, _session, _isFirstLaunch);
+            form.ShowDialog(this);
         }
-        else
+        catch (Exception ex)
         {
-            SetStatus("Не удалось сохранить настройки", Theme.Danger);
-            AppLog.Write("Settings save warning: " + error);
+            AppLog.Error("Open settings", ex);
+            SetStatus("Не удалось открыть настройки", Theme.Danger);
         }
     }
 
@@ -619,8 +614,19 @@ internal sealed class MainForm : BaseDarkForm
         _lifetimeCts.Cancel();
 
         _settings.Nickname = _nickBox.Text.Trim();
-        SettingsService.TrySave(_settings, out _);
+        _session.Save();
 
         base.OnFormClosing(e);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _session.Dispose();
+            _lifetimeCts.Dispose();
+        }
+
+        base.Dispose(disposing);
     }
 }

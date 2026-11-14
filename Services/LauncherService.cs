@@ -40,6 +40,7 @@ internal sealed class LauncherService
         await _clientUpdater.UpdateAsync(
             build,
             config.OptionalMods,
+            settings.OptionalModStates,
             progress,
             cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();

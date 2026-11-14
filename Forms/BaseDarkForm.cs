@@ -12,11 +12,27 @@ internal class BaseDarkForm : Form
 
     private readonly Label _minimizeButton;
     private readonly Label _closeButton;
+    private readonly TableLayoutPanel _root;
     private bool _allowMinimize;
 
     protected Panel TitleBarPanel { get; }
     protected Panel ContentArea { get; }
     protected Label TitleLabel { get; }
+
+    /// <summary>
+    /// Hides the custom title bar and frees its row (used by forms that use the
+    /// standard Windows border instead).
+    /// </summary>
+    protected void CollapseTitleBar()
+    {
+        if (_root.RowStyles.Count > 0)
+        {
+            _root.RowStyles[0].SizeType = SizeType.Absolute;
+            _root.RowStyles[0].Height = 0f;
+        }
+
+        TitleBarPanel.Visible = false;
+    }
 
     protected BaseDarkForm(Size clientSize, bool allowMinimize = false)
     {
@@ -52,6 +68,7 @@ internal class BaseDarkForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44f));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
         Controls.Add(root);
+        _root = root;
 
         TitleBarPanel = new Panel
         {
