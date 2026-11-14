@@ -110,7 +110,8 @@ internal sealed class RoundedComboBox : UserControl
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
-        e.Graphics.Clear(Parent?.BackColor ?? Theme.Background);
+        // Blend the rounded corners into the real backdrop (never black).
+        e.Graphics.Clear(Theme.EffectiveBackColor(Parent));
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -118,7 +119,8 @@ internal sealed class RoundedComboBox : UserControl
         var graphics = e.Graphics;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
 
-        var rect = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+        // Stay strictly inside ClientRectangle so the rounded outline is never clipped.
+        var rect = new RectangleF(0.5f, 0.5f, Math.Max(1, Width - 1f), Math.Max(1, Height - 1f));
         using var path = Theme.RoundedRect(rect, CornerRadius);
 
         using (var fill = new SolidBrush(Fill))

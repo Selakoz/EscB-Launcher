@@ -82,7 +82,7 @@ internal sealed class RoundedButton : Button
     {
         var graphics = e.Graphics;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        graphics.Clear(Parent?.BackColor ?? Theme.Background);
+        graphics.Clear(Theme.EffectiveBackColor(Parent));
 
         var rect = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
         using var path = Theme.RoundedRect(rect, CornerRadius);

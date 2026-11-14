@@ -40,6 +40,12 @@ internal sealed class SettingsForm : BaseDarkForm
         StartPosition = FormStartPosition.CenterParent;
         Font = new Font("Segoe UI", 10f);
 
+        // Custom borderless window: a 1px dark theme frame drawn via Padding/BackColor,
+        // so there is no white OS border anywhere.
+        FormBorderStyle = FormBorderStyle.None;
+        BackColor = Theme.Border;
+        Padding = new Padding(1);
+
         _config = config;
         _session = session;
         _settings = session.Settings;
@@ -58,17 +64,16 @@ internal sealed class SettingsForm : BaseDarkForm
     {
         ContentArea.SuspendLayout();
 
-        var tabControl = new TabControl
+        var tabControl = new DarkTabControl
         {
             Dock = DockStyle.Fill,
-            BackColor = Theme.Background,
-            Font = new Font("Segoe UI", 10f),
             Margin = Padding.Empty
         };
 
         var tabLaunch = new TabPage("Запуск и память")
         {
             BackColor = Theme.Background,
+            UseVisualStyleBackColor = false,
             Margin = Padding.Empty,
             Padding = new Padding(16)
         };
@@ -76,6 +81,7 @@ internal sealed class SettingsForm : BaseDarkForm
         var tabMods = new TabPage("Оптимизация и визуал")
         {
             BackColor = Theme.Background,
+            UseVisualStyleBackColor = false,
             Margin = Padding.Empty,
             Padding = new Padding(16)
         };
@@ -383,9 +389,9 @@ internal sealed class SettingsForm : BaseDarkForm
             Theme.Accent,
             Theme.Background);
         header.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        header.AutoSize = false;
-        header.Height = 20;
-        AddRow(header, new RowStyle(SizeType.Absolute, 24f), 6);
+        // AutoSize lets WinForms measure the font metrics so descenders are not clipped.
+        header.AutoSize = true;
+        AddRow(header, new RowStyle(SizeType.AutoSize), 6);
 
         var note = UiFactory.Label(
             layout,
@@ -394,9 +400,8 @@ internal sealed class SettingsForm : BaseDarkForm
             Theme.Muted,
             Theme.Background);
         note.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        note.AutoSize = false;
-        note.Height = 18;
-        AddRow(note, new RowStyle(SizeType.Absolute, 22f), 10);
+        note.AutoSize = true;
+        AddRow(note, new RowStyle(SizeType.AutoSize), 10);
 
         var resetMods = new RoundedButton
         {
@@ -418,9 +423,8 @@ internal sealed class SettingsForm : BaseDarkForm
 
         _modsPanel = new Panel
         {
-            Dock = DockStyle.Fill,
-            AutoScroll = true,
             BackColor = Theme.Background,
+            AutoScroll = true,
             Margin = Padding.Empty,
             Padding = new Padding(0, 0, 8, 8)
         };
@@ -428,6 +432,10 @@ internal sealed class SettingsForm : BaseDarkForm
         BuildModCards();
 
         AddRow(_modsPanel, new RowStyle(SizeType.Percent, 100f), 0);
+
+        // AddRow docks children to the top; the scrollable list must fill the remaining
+        // vertical space of the tab instead, otherwise it is cut off.
+        _modsPanel.Dock = DockStyle.Fill;
 
         page.Controls.Add(layout);
     }

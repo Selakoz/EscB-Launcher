@@ -31,6 +31,23 @@ internal static class Theme
     public static Font Font(float size, FontStyle style = FontStyle.Regular) =>
         new("Segoe UI", size, style, GraphicsUnit.Point);
 
+    /// <summary>
+    /// Returns the first opaque background colour walking up the parent chain.
+    /// Custom-painted controls use this to blend their rounded corners into the real
+    /// backdrop instead of painting black when a parent is transparent.
+    /// </summary>
+    public static Color EffectiveBackColor(Control? control)
+    {
+        for (Control? c = control; c is not null; c = c.Parent)
+        {
+            Color back = c.BackColor;
+            if (back != Color.Transparent && back.A == 255)
+                return back;
+        }
+
+        return Background;
+    }
+
     public static GraphicsPath RoundedRect(RectangleF bounds, float radius)
     {
         var path = new GraphicsPath();

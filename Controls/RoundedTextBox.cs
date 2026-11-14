@@ -135,7 +135,8 @@ internal sealed class RoundedTextBox : Panel
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
-        e.Graphics.Clear(Parent?.BackColor ?? Theme.Background);
+        // Blend the rounded corners into the real backdrop (never black).
+        e.Graphics.Clear(Theme.EffectiveBackColor(Parent));
     }
 
     protected override void OnPaint(PaintEventArgs e)

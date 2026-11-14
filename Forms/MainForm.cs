@@ -94,6 +94,8 @@ internal sealed class MainForm : BaseDarkForm
             Size = new Size(380, 95),
             SizeMode = PictureBoxSizeMode.Zoom,
             BackColor = Theme.Background,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
             Image = Branding.LoadBanner()
         };
         bannerHost.Controls.Add(_bannerBox);
@@ -107,7 +109,9 @@ internal sealed class MainForm : BaseDarkForm
             BorderColor = Theme.Border,
             BorderSize = 1,
             Dock = DockStyle.Top,
-            Height = 148,
+            // Tall enough for both label rows + input rows + internal padding, so the
+            // dropdown is never clipped at the bottom.
+            Height = 172,
             Margin = new Padding(0, 0, 0, 8),
             Padding = new Padding(16)
         };
@@ -115,7 +119,9 @@ internal sealed class MainForm : BaseDarkForm
         var inner = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            BackColor = Color.Transparent,
+            // Opaque surface colour: rounded controls blend their corners into the card
+            // instead of painting black over a transparent parent.
+            BackColor = Theme.Surface,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
@@ -203,12 +209,16 @@ internal sealed class MainForm : BaseDarkForm
             BorderColor = Theme.Border,
             BorderSize = 1,
             ForeColor = Theme.Text,
-            Anchor = AnchorStyles.Left | AnchorStyles.Top
+            Anchor = AnchorStyles.Left | AnchorStyles.Top,
+            // No margin: the button must use the whole 38px row without being clipped.
+            Margin = Padding.Empty
         };
         _settingsButton.Click += (_, _) => OpenSettings();
         buttonRow.Controls.Add(_settingsButton, 0, 0);
         buttonRow.Controls.Add(new Label { Height = 1 }, 1, 0);
-        Add(buttonRow, new RowStyle(SizeType.Absolute, 38f));
+        // Outer row includes the 8px bottom margin, otherwise the inner row shrinks
+        // to 30px and clips the 36px button.
+        Add(buttonRow, new RowStyle(SizeType.Absolute, 46f));
 
         // ---- 5. Status + progress ----
         _statusLabel = UiFactory.Label(
@@ -250,16 +260,22 @@ internal sealed class MainForm : BaseDarkForm
 
     /// <summary>
     /// Keeps the banner strictly centered horizontally and vertically.
+    /// The banner's parent is the padded layout table, so the form-relative centre is
+    /// converted into the parent's coordinate space.
     /// </summary>
     private void CenterBanner()
     {
-        if (_bannerBox is null || _bannerBox.Parent is null)
+        if (_bannerBox is null || _bannerBox.Parent is not Control host)
             return;
 
-        _bannerBox.Left = (this.ClientSize.Width - _bannerBox.Width) / 2;
+        // Exact horizontal centre relative to the form's client area.
+        int leftOnForm = (this.ClientSize.Width - _bannerBox.Width) / 2;
 
-        var host = _bannerBox.Parent;
-        _bannerBox.Top = Math.Max(0, (host.Height - _bannerBox.Height) / 2);
+        // Convert from form coordinates into the host's coordinate space.
+        int hostOffsetX = host.PointToScreen(Point.Empty).X - this.PointToScreen(Point.Empty).X;
+
+        _bannerBox.Left = leftOnForm - hostOffsetX;
+        _bannerBox.Top = Math.Max(0, (host.ClientSize.Height - _bannerBox.Height) / 2);
     }
 
     protected override void OnResize(EventArgs e)
@@ -296,6 +312,9 @@ internal sealed class MainForm : BaseDarkForm
     protected override async void OnShown(EventArgs e)
     {
         base.OnShown(e);
+
+        // Re-centre after the window has its final size/font scaling.
+        CenterBanner();
 
         try
         {
