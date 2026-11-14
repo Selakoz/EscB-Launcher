@@ -72,17 +72,18 @@ internal sealed class ErrorForm : BaseDarkForm
             var showDetails = new LinkLabel
             {
                 Location = new Point(24, nextY),
-                Size = new Size(260, 20),
+                Size = new Size(340, 26),
+                AutoSize = false,
                 Text = "Показать полный текст ошибки »",
                 LinkColor = Theme.Accent,
                 ActiveLinkColor = Theme.AccentHover,
                 LinkBehavior = LinkBehavior.HoverUnderline,
                 BackColor = Theme.Background,
-                Font = Theme.Font(9f)
+                Font = Theme.Font(11f)
             };
             showDetails.LinkClicked += (_, _) => OpenDetails(fullDetails);
             ContentArea.Controls.Add(showDetails);
-            nextY += 24;
+            nextY += 30;
         }
 
         if (!string.IsNullOrWhiteSpace(logPath))
@@ -128,7 +129,7 @@ internal sealed class ErrorDetailForm : BaseDarkForm
 
         UiFactory.Label(
             ContentArea,
-            "Полный текст исключения",
+            "Полный текст проблемы",
             Theme.Font(12f, FontStyle.Bold),
             Theme.Text,
             Theme.Background,

@@ -43,6 +43,12 @@ internal sealed class RoundedComboBox : UserControl
     /// <summary>Converts an item into the text shown in the list.</summary>
     public Func<object?, string>? Formatter { get; set; }
 
+    /// <summary>
+    /// Optional per-item background colour (e.g. build status colours in the dropdown).
+    /// When null, the default dark fill is used.
+    /// </summary>
+    public Func<object?, Color>? ItemBackColorSelector { get; set; }
+
     public event EventHandler? SelectedIndexChanged;
 
     public IReadOnlyList<object> Items => _items;
@@ -179,7 +185,8 @@ internal sealed class RoundedComboBox : UserControl
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
-        if (e.Button == MouseButtons.Left)
+        // The whole control surface (not just the text) opens the dropdown.
+        if (e.Button == MouseButtons.Left && ClientRectangle.Contains(e.Location))
         {
             _pressed = true;
             Focus();
@@ -261,7 +268,7 @@ internal sealed class RoundedComboBox : UserControl
             var item = new ToolStripMenuItem(Format(_items[i]))
             {
                 ForeColor = Theme.Text,
-                BackColor = Fill,
+                BackColor = ItemBackColorSelector?.Invoke(_items[i]) ?? Fill,
                 AutoSize = true,
                 Padding = new Padding(10, 6, 10, 6),
                 Tag = index
@@ -334,7 +341,14 @@ internal sealed class RoundedComboBox : UserControl
         {
             bool highlighted = e.Item.Selected || e.Item.Pressed;
 
-            using var brush = new SolidBrush(highlighted ? Theme.Accent : Fill);
+            // Keep the per-item status colour unless the row is highlighted.
+            Color background = highlighted
+                ? Theme.Accent
+                : (e.Item.BackColor.IsEmpty || e.Item.BackColor == Color.Transparent
+                    ? Fill
+                    : e.Item.BackColor);
+
+            using var brush = new SolidBrush(background);
             e.Graphics.FillRectangle(brush, new Rectangle(Point.Empty, e.Item.Size));
         }
 

@@ -19,6 +19,7 @@ internal sealed class MainForm : BaseDarkForm
     private readonly LauncherService _launcherService = new();
     private readonly CancellationTokenSource _lifetimeCts = new();
     private readonly SettingsSession _session;
+    private readonly BuildStatusService _statusService = new();
 
     private LauncherConfig? _config;
     private RoundedTextBox _nickBox = null!;
@@ -32,6 +33,9 @@ internal sealed class MainForm : BaseDarkForm
     private readonly UserSettings _settings;
     private readonly bool _isFirstLaunch;
     private BuildInfo _selectedBuild = new();
+    private BuildStatus _selectedStatus = BuildStatus.NotInstalled;
+    private Dictionary<string, BuildStatus> _statuses =
+        new(StringComparer.OrdinalIgnoreCase);
     private Process? _gameProcess;
     private bool _busy;
     private bool _suppressBuildEvents;
@@ -172,7 +176,10 @@ internal sealed class MainForm : BaseDarkForm
         {
             Height = 36,
             Font = new Font("Segoe UI", 10f),
-            Formatter = item => (item as BuildInfo)?.Name ?? item?.ToString() ?? string.Empty
+            Formatter = item => (item as BuildListItem)?.Text ?? item?.ToString() ?? string.Empty,
+            ItemBackColorSelector = item => item is BuildListItem buildItem
+                ? BuildListItem.StatusBackColor(buildItem.Status)
+                : Color.FromArgb(30, 30, 46)
         };
         _buildsBox.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
         AddInner(_buildsBox, 0);
@@ -300,11 +307,13 @@ internal sealed class MainForm : BaseDarkForm
             if (_suppressBuildEvents)
                 return;
 
-            if (_buildsBox.SelectedItem is BuildInfo build)
+            if (_buildsBox.SelectedItem is BuildListItem item)
             {
-                _selectedBuild = build;
-                _settings.SelectedBuildId = build.Id;
+                _selectedBuild = item.Build;
+                _selectedStatus = item.Status;
+                _settings.SelectedBuildId = item.BuildId;
                 _session.Save();
+                UpdatePlayButtonForSelectedBuild();
             }
         };
     }
@@ -338,17 +347,80 @@ internal sealed class MainForm : BaseDarkForm
             return;
         }
 
+        // Re-check every build against the local instance folders.
+        _statuses = _statusService.RefreshStatuses(_config.Builds);
+
+        var items = _config.Builds
+            .Select(build =>
+            {
+                BuildStatus status = _statuses.TryGetValue(build.Id, out BuildStatus value)
+                    ? value
+                    : BuildStatus.NotInstalled;
+
+                return new BuildListItem
+                {
+                    Text = build.Name + BuildListItem.StatusSuffix(status),
+                    BuildId = build.Id,
+                    Status = status,
+                    Build = build
+                };
+            })
+            .ToList();
+
         _suppressBuildEvents = true;
         _buildsBox.SetItems(
-            _config.Builds,
+            items,
             _settings.SelectedBuildId,
-            item => (item as BuildInfo)?.Id);
+            item => (item as BuildListItem)?.BuildId);
 
-        _selectedBuild = _buildsBox.SelectedItem as BuildInfo ?? new BuildInfo();
-        if (_selectedBuild.Id.Length > 0)
-            _settings.SelectedBuildId = _selectedBuild.Id;
+        if (_buildsBox.SelectedItem is BuildListItem selected)
+        {
+            _selectedBuild = selected.Build;
+            _selectedStatus = selected.Status;
+            _settings.SelectedBuildId = selected.BuildId;
+        }
+        else
+        {
+            _selectedBuild = _config.Builds[0];
+            _selectedStatus = BuildStatus.NotInstalled;
+        }
 
         _suppressBuildEvents = false;
+
+        UpdatePlayButtonForSelectedBuild();
+    }
+
+    /// <summary>
+    /// Applies the selected build status to the main action button:
+    /// ИГРАТЬ (accent) / ОБНОВИТЬ (amber) / УСТАНОВИТЬ (green).
+    /// </summary>
+    private void UpdatePlayButtonForSelectedBuild()
+    {
+        switch (_selectedStatus)
+        {
+            case BuildStatus.UpToDate:
+                _playButton.Text = "ИГРАТЬ";
+                _playButton.NormalBackColor = Theme.Accent;
+                _playButton.HoverBackColor = Theme.AccentHover;
+                _playButton.PressedBackColor = Theme.AccentPressed;
+                break;
+
+            case BuildStatus.UpdateAvailable:
+                _playButton.Text = "ОБНОВИТЬ";
+                _playButton.NormalBackColor = Color.FromArgb(212, 160, 23);   // #D4A017
+                _playButton.HoverBackColor = Color.FromArgb(228, 178, 45);
+                _playButton.PressedBackColor = Color.FromArgb(180, 134, 12);
+                break;
+
+            default:
+                _playButton.Text = "УСТАНОВИТЬ";
+                _playButton.NormalBackColor = Color.FromArgb(46, 125, 50);    // #2E7D32
+                _playButton.HoverBackColor = Color.FromArgb(58, 150, 62);
+                _playButton.PressedBackColor = Color.FromArgb(36, 99, 40);
+                break;
+        }
+
+        _playButton.Invalidate();
     }
 
     private void SetStatus(string text, Color color)
@@ -366,7 +438,91 @@ internal sealed class MainForm : BaseDarkForm
     }
 
     private async void PlayButton_Click(object? sender, EventArgs e) =>
-        await StartGameAsync();
+        await HandlePrimaryActionAsync();
+
+    private async Task HandlePrimaryActionAsync()
+    {
+        if (_selectedStatus == BuildStatus.UpToDate)
+            await StartGameAsync();
+        else
+            await InstallOrUpdateAsync();
+    }
+
+    /// <summary>
+    /// Downloads/updates the selected build, then refreshes statuses and restores the
+    /// main button to its status-aware state.
+    /// </summary>
+    private async Task InstallOrUpdateAsync()
+    {
+        if (_busy || _gameProcess != null)
+            return;
+
+        if (_config == null || _config.Builds.Count == 0)
+        {
+            SetStatus("Список сборок не загружен", Theme.Danger);
+            return;
+        }
+
+        _busy = true;
+        SetControlsEnabled(false);
+        _playButton.Text = "ОБНОВЛЕНИЕ...";
+        _progressBar.Value = 0;
+        SetStatus("Подготовка к обновлению...", Theme.Muted);
+
+        var progress = new Progress<LaunchProgress>(update =>
+        {
+            if (IsDisposed)
+                return;
+
+            _progressBar.Value = update.Percent;
+            SetStatus(update.Status, Theme.Muted);
+        });
+
+        try
+        {
+            await _launcherService.UpdateBuildAsync(
+                _config,
+                _selectedBuild,
+                _settings,
+                progress,
+                _lifetimeCts.Token);
+
+            if (IsDisposed)
+                return;
+
+            // Re-check statuses and rebuild the dropdown/button state.
+            PopulateBuilds();
+            _progressBar.Value = 100;
+            SetStatus("Сборка готова к запуску", Theme.Success);
+        }
+        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
+        {
+            // The launcher is closing; no error dialog is needed.
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Build update", ex);
+
+            if (!IsDisposed)
+            {
+                SetStatus("Ошибка обновления", Theme.Danger);
+                ShowError(
+                    "Не удалось обновить сборку",
+                    BuildUserMessage(ex),
+                    BuildFullDetails(ex),
+                    null);
+            }
+        }
+        finally
+        {
+            if (!IsDisposed)
+            {
+                _busy = false;
+                SetControlsEnabled(true);
+                UpdatePlayButtonForSelectedBuild();
+            }
+        }
+    }
 
     private async void NickBox_KeyDown(object? sender, KeyEventArgs e)
     {
@@ -377,7 +533,7 @@ internal sealed class MainForm : BaseDarkForm
         e.Handled = true;
 
         if (!_busy && _gameProcess == null)
-            await StartGameAsync();
+            await HandlePrimaryActionAsync();
     }
 
     private async Task StartGameAsync()
@@ -434,12 +590,20 @@ internal sealed class MainForm : BaseDarkForm
 
         try
         {
-            LaunchResult result = await _launcherService.LaunchAsync(
+            LaunchResult? result = await _launcherService.LaunchAsync(
                 _config,
                 _selectedBuild,
                 _settings,
                 progress,
                 _lifetimeCts.Token);
+
+            if (result is null)
+            {
+                // Low-RAM confirmation was declined by the user.
+                if (!IsDisposed)
+                    SetStatus("Запуск отменён", Theme.Muted);
+                return;
+            }
 
             _busy = false;
             AttachGameProcess(result);
@@ -474,7 +638,7 @@ internal sealed class MainForm : BaseDarkForm
             {
                 _busy = false;
                 SetControlsEnabled(true);
-                _playButton.Text = "ИГРАТЬ";
+                UpdatePlayButtonForSelectedBuild();
             }
         }
     }
@@ -540,7 +704,7 @@ internal sealed class MainForm : BaseDarkForm
 
         SetControlsEnabled(true);
         _playButton.Enabled = true;
-        _playButton.Text = "ИГРАТЬ";
+        UpdatePlayButtonForSelectedBuild();
         _progressBar.Value = 100;
 
         if (exitCode == 0)

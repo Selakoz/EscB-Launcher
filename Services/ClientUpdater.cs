@@ -124,6 +124,12 @@ internal sealed class ClientUpdater
         await File.WriteAllTextAsync(versionFile, build.Version, cancellationToken);
         await File.WriteAllTextAsync(urlFile, build.ClientZipUrl, cancellationToken);
 
+        // Human-readable marker consumed by BuildStatusService.
+        await File.WriteAllTextAsync(
+            LauncherPaths.GetStatusVersionFile(build.Id),
+            build.Version,
+            cancellationToken);
+
         progress.Report(new LaunchProgress(48, $"Сборка «{build.Name}» установлена"));
         AppLog.Write($"Client updated: build={build.Id}, version={build.Version}");
 

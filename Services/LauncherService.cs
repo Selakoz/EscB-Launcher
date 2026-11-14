@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Windows.Forms;
 using CmlLib.Core;
 using CmlLib.Core.Auth;
 using CmlLib.Core.Installers;
@@ -20,7 +21,23 @@ internal sealed class LauncherService
     public Task<LauncherConfig> LoadConfigAsync() =>
         _configService.LoadAsync(new Progress<LaunchProgress>(), CancellationToken.None);
 
-    public async Task<LaunchResult> LaunchAsync(
+    /// <summary>
+    /// Downloads/updates the selected build (client ZIP + Minecraft files) without
+    /// starting the game. Used by the "ОБНОВИТЬ"/"УСТАНОВИТЬ" button state.
+    /// </summary>
+    public async Task UpdateBuildAsync(
+        LauncherConfig config,
+        BuildInfo build,
+        UserSettings settings,
+        IProgress<LaunchProgress> progress,
+        CancellationToken cancellationToken)
+    {
+        await PrepareBuildAsync(config, build, settings, progress, cancellationToken);
+        progress.Report(new LaunchProgress(100, "Сборка обновлена"));
+        AppLog.Write($"Build prepared without launch: build={build.Id}, version={build.Version}");
+    }
+
+    public async Task<LaunchResult?> LaunchAsync(
         LauncherConfig config,
         BuildInfo build,
         UserSettings settings,
@@ -30,45 +47,15 @@ internal sealed class LauncherService
         if (string.IsNullOrWhiteSpace(settings.Nickname))
             throw new InvalidOperationException("Не указан никнейм.");
 
-        LauncherPaths.EnsureRoot();
-        LauncherPaths.EnsureInstance(build.Id);
-
-        await _bannerService.TryUpdateAsync(config, cancellationToken);
-        cancellationToken.ThrowIfCancellationRequested();
-
-        progress.Report(new LaunchProgress(40, "Обновление сборки..."));
-        await _clientUpdater.UpdateAsync(
+        var (launcher, version) = await PrepareBuildAsync(
+            config,
             build,
-            config.OptionalMods,
-            settings.OptionalModStates,
+            settings,
             progress,
             cancellationToken);
-        cancellationToken.ThrowIfCancellationRequested();
 
         int ramMb = Math.Max(1024, settings.RamMb);
         int minRamMb = Math.Min(1024, ramMb);
-
-        progress.Report(new LaunchProgress(50, $"Подготовка Minecraft {build.McVersion}..."));
-
-        var minecraftPath = new MinecraftPath(LauncherPaths.GetInstancePath(build.Id));
-        var launcher = new MinecraftLauncher(minecraftPath);
-
-        var fileProgress = new Progress<InstallerProgressChangedEventArgs>(args =>
-        {
-            double ratio = args.TotalTasks > 0
-                ? Math.Clamp((double)args.ProgressedTasks / args.TotalTasks, 0d, 1d)
-                : 0d;
-            string name = string.IsNullOrWhiteSpace(args.Name) ? "файлы игры" : args.Name!;
-            progress.Report(new LaunchProgress(
-                50 + (ratio * 36),
-                $"Установка: {args.ProgressedTasks}/{args.TotalTasks} · {name}"));
-        });
-
-        progress.Report(new LaunchProgress(50, $"Получение манифеста {build.McVersion}..."));
-        IVersion version = await launcher.GetVersionAsync(build.McVersion, cancellationToken);
-
-        progress.Report(new LaunchProgress(50, $"Проверка файлов Minecraft {build.McVersion}..."));
-        await launcher.InstallAsync(version, fileProgress, null, cancellationToken);
 
         progress.Report(new LaunchProgress(88, "Поиск Java..."));
         string javaPath = ResolveJavaPath(launcher, version, settings);
@@ -144,6 +131,14 @@ internal sealed class LauncherService
         process.StartInfo.UseShellExecute = false;
         process.EnableRaisingEvents = true;
 
+        // Low-RAM guard: fast (GlobalMemoryStatusEx) and cancellable by the user.
+        if (!ConfirmEnoughMemory(ramMb))
+        {
+            AppLog.Write($"Launch cancelled by user (low memory): allocated={ramMb}MB");
+            progress.Report(new LaunchProgress(0, "Запуск отменён"));
+            return null;
+        }
+
         progress.Report(new LaunchProgress(99, "Запуск Minecraft..."));
         process.Start();
         progress.Report(new LaunchProgress(100, "Minecraft запущен"));
@@ -153,6 +148,87 @@ internal sealed class LauncherService
             $"mc={build.McVersion}, ram={ramMb}MB, java={javaPath}, args={finalJvmArgs}");
 
         return new LaunchResult(process, javaPath, finalJvmArgs, LauncherPaths.GetGameLogFile(build.Id));
+    }
+
+    /// <summary>
+    /// Shared preparation step: banner, client ZIP and Minecraft files.
+    /// </summary>
+    private async Task<(MinecraftLauncher Launcher, IVersion Version)> PrepareBuildAsync(
+        LauncherConfig config,
+        BuildInfo build,
+        UserSettings settings,
+        IProgress<LaunchProgress> progress,
+        CancellationToken cancellationToken)
+    {
+        LauncherPaths.EnsureRoot();
+        LauncherPaths.EnsureInstance(build.Id);
+
+        await _bannerService.TryUpdateAsync(config, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        progress.Report(new LaunchProgress(40, "Обновление сборки..."));
+        await _clientUpdater.UpdateAsync(
+            build,
+            config.OptionalMods,
+            settings.OptionalModStates,
+            progress,
+            cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        progress.Report(new LaunchProgress(50, $"Подготовка Minecraft {build.McVersion}..."));
+
+        var minecraftPath = new MinecraftPath(LauncherPaths.GetInstancePath(build.Id));
+        var launcher = new MinecraftLauncher(minecraftPath);
+
+        var fileProgress = new Progress<InstallerProgressChangedEventArgs>(args =>
+        {
+            double ratio = args.TotalTasks > 0
+                ? Math.Clamp((double)args.ProgressedTasks / args.TotalTasks, 0d, 1d)
+                : 0d;
+            string name = string.IsNullOrWhiteSpace(args.Name) ? "файлы игры" : args.Name!;
+            progress.Report(new LaunchProgress(
+                50 + (ratio * 36),
+                $"Установка: {args.ProgressedTasks}/{args.TotalTasks} · {name}"));
+        });
+
+        progress.Report(new LaunchProgress(50, $"Получение манифеста {build.McVersion}..."));
+        IVersion version = await launcher.GetVersionAsync(build.McVersion, cancellationToken);
+
+        progress.Report(new LaunchProgress(50, $"Проверка файлов Minecraft {build.McVersion}..."));
+        await launcher.InstallAsync(version, fileProgress, null, cancellationToken);
+
+        return (launcher, version);
+    }
+
+    /// <summary>
+    /// Shows an OK/Cancel prompt when the allocated heap exceeds the free physical RAM.
+    /// Returns true when the launch should proceed.
+    /// </summary>
+    private static bool ConfirmEnoughMemory(int allocatedRamMb)
+    {
+        try
+        {
+            int availableMb = SystemMemoryInfo.GetAvailablePhysicalMemoryMb();
+            if (availableMb <= 0 || availableMb >= allocatedRamMb)
+                return true;
+
+            AppLog.Write(
+                $"Low memory warning: allocated={allocatedRamMb}MB, available={availableMb}MB");
+
+            DialogResult result = MessageBox.Show(
+                $"Выделено памяти: {allocatedRamMb} МБ, свободно: {availableMb} МБ.{Environment.NewLine}{Environment.NewLine}" +
+                "Возможны вылеты и проблемы с производительностью.",
+                "Недостаточно свободной памяти",
+                MessageBoxButtons.OKCancel,
+                MessageBoxIcon.Warning);
+
+            return result == DialogResult.OK;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Memory check", ex);
+            return true;
+        }
     }
 
     private static string ResolveJavaPath(

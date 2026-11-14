@@ -23,6 +23,13 @@ internal static class LauncherPaths
     public static string GetVersionFile(string buildId) =>
         Path.Combine(GetInstancePath(buildId), ".client_version");
 
+    /// <summary>
+    /// Human-readable version marker used by <see cref="BuildStatusService"/>.
+    /// Written next to the legacy <c>.client_version</c> marker after each download.
+    /// </summary>
+    public static string GetStatusVersionFile(string buildId) =>
+        Path.Combine(GetInstancePath(buildId), "version.txt");
+
     public static string GetClientUrlFile(string buildId) =>
         Path.Combine(GetInstancePath(buildId), ".client_zip_url");
 

@@ -102,57 +102,41 @@ internal sealed class SettingsForm : BaseDarkForm
             Padding = new Padding(16, 8, 16, 12)
         };
 
-        var saveButton = new RoundedButton
+        // Settings are auto-saved on every change, so a single Close button is enough.
+        var closeButton = new RoundedButton
         {
-            Text = "Сохранить",
+            Text = "Закрыть",
             Width = 124,
             Height = 38,
             Font = ButtonFont,
             CornerRadius = 10,
-            ForeColor = Theme.Text,
-            Anchor = AnchorStyles.Right | AnchorStyles.Top
-        };
-        saveButton.Click += (_, _) =>
-        {
-            _session.Save();
-            DialogResult = DialogResult.OK;
-            Close();
-        };
-        buttonBar.Controls.Add(saveButton);
-
-        var cancelButton = new RoundedButton
-        {
-            Text = "Отмена",
-            Width = 110,
-            Height = 38,
-            Font = ButtonFont,
-            CornerRadius = 10,
-            NormalBackColor = Theme.Surface,
+            NormalBackColor = Color.FromArgb(30, 30, 46), // #1E1E2E
             HoverBackColor = Theme.SurfaceHover,
             PressedBackColor = Color.FromArgb(19, 22, 29),
-            BorderColor = Theme.Border,
+            BorderColor = Theme.Border,                   // #383850
             BorderSize = 1,
             ForeColor = Theme.Text,
             Anchor = AnchorStyles.Right | AnchorStyles.Top
         };
-        cancelButton.Click += (_, _) =>
+        closeButton.Click += (_, _) =>
         {
-            DialogResult = DialogResult.Cancel;
+            // Flush any pending debounced changes before closing.
+            _session.Save();
             Close();
         };
-        buttonBar.Controls.Add(cancelButton);
+        buttonBar.Controls.Add(closeButton);
 
         ContentArea.Controls.Add(tabControl);
         ContentArea.Controls.Add(buttonBar);
 
         ContentArea.ResumeLayout();
 
-        // Position the bottom-right buttons after the bar has its final size.
+        // Keep the Close button pinned to the bottom-right corner.
         buttonBar.Resize += (_, _) =>
         {
-            saveButton.Left = Math.Max(0, buttonBar.ClientSize.Width - 16 - saveButton.Width);
-            cancelButton.Left = Math.Max(0, saveButton.Left - 10 - cancelButton.Width);
+            closeButton.Left = Math.Max(0, buttonBar.ClientSize.Width - 16 - closeButton.Width);
         };
+        closeButton.Left = Math.Max(0, buttonBar.ClientSize.Width - 16 - closeButton.Width);
     }
 
     private void BuildLaunchTab(TabPage page)
