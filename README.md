@@ -1,104 +1,170 @@
-# EscapeBook Launcher
+# EscB Client (EscapeBook Launcher)
 
-Компактный десктопный лаунчер Minecraft на C# / .NET 8 / Windows Forms.
-Тёмный интерфейс, оффлайн-запуск, автообновление сборки с GitHub, фикс дискретной
+Десктопный лаунчер Minecraft для сервера EscapeBook на C# / .NET 8 / Windows Forms:
+тёмный интерфейс, оффлайн-запуск, автообновление сборок с GitHub, фикс дискретной
 видеокарты через реестр и телеметрия железа в Discord.
+
+Проект состоит из двух приложений:
+
+| Проект | Назначение | Итоговый файл |
+| --- | --- | --- |
+| `EscapeBookBootstrapper` | лёгкий загрузчик и автообновление | `EscapeBookBootstrapper.exe` |
+| `EscapeBook` | основной лаунчер (WinForms) | `EscBClient.exe` (в архиве `EscBClient.zip`) |
+
+## Как это работает (2 шага)
+
+1. Игрок запускает **`EscapeBookBootstrapper.exe`**.
+2. Загрузчик запрашивает последний релиз на GitHub и сравнивает его `tag_name`
+   с локальным `%APPDATA%\.escapebook\launcher\.bootstrapper_version`:
+   - если версии совпадают — сразу запускает установленный `EscBClient.exe`;
+   - если нужен апдейт — скачивает `EscBClient.zip`, распаковывает его в
+     `%APPDATA%\.escapebook\launcher\` (с перезаписью и обходом блокировки
+     запущенного `.exe`), сохраняет новый тег и запускает клиент.
+3. Загрузчик завершает работу, дальше играет лаунчер.
+
+Если GitHub недоступен, загрузчик тихо запускает уже установленный
+`EscBClient.exe`. Все ошибки пишутся в
+`%APPDATA%\.escapebook\launcher\bootstrapper.log`.
 
 ## Возможности
 
-- Никнейм сохраняется в `%APPDATA%\.EscapeBook\user_settings.json`.
-- Ползунок ОЗУ: максимум автоматически рассчитывается по объёму физической памяти
+- Никнейм, выбранная сборка, ОЗУ, JVM-аргументы и путь к Java сохраняются
+  автоматически в `%APPDATA%\.escapebook\user_settings.json`.
+- Ползунок ОЗУ: максимум рассчитывается по объёму физической памяти
   (общий объём минус 2 ГБ резерва для системы), выделить больше нельзя.
-- Отдельное окно настроек: кастомные JVM-аргументы и ручной путь к `javaw.exe`.
-- Единый прогресс: конфиг → скачивание сборки → распаковка → установка Minecraft →
-  телеметрия → запуск.
-- Сборка клиента скачивается ZIP-архивом с прогрессом и распаковывается с
-  перезаписью. `options.txt` игрока не перезаписывается, если файл уже существует.
-- `javaw.exe`, которым реально запускается игра, прописывается в
-  `HKEY_CURRENT_USER\Software\Microsoft\DirectX\UserGpuPreferences` со значением
-  `GpuPreference=2;` (высокопроизводительная видеокарта).
-- Телеметрия: CPU, все видеокарты, общий/свободный объём ОЗУ, выделенная играм
-  память и итоговые JVM-аргументы. Отправляется POST-запросом на Discord webhook,
-  если `discord_webhook_url` заполнен.
+- Цветные подсказки по памяти: < 6144 МБ — красный, 6144–12288 — зелёный,
+  > 12288 — жёлтый.
+- Выбор сборки с индикацией состояния: «Актуальная», «Требуется обновление»,
+  «Не установлено»; главная кнопка меняется на **ИГРАТЬ / ОБНОВИТЬ / УСТАНОВИТЬ**.
+- Отдельные инстансы: `%APPDATA%\.escapebook\instances\<id>\`.
+- Обновление сборки ZIP-архивом с прогрессом; `options.txt` не перезаписывается,
+  состояние `.disabled`-модов сохраняется.
+- Менеджер оптимизации: карточки `optional_mods` с переключателями
+  `.jar` ↔ `.jar.disabled`.
+- JVM-пресеты: аргументы обновляются с сервера только при росте
+  `jvm_preset_version`.
+- `javaw.exe`, которым запускается игра, прописывается в
+  `HKEY_CURRENT_USER\Software\Microsoft\DirectX\UserGpuPreferences`
+  со значением `GpuPreference=2;`.
+- Телеметрия: CPU, все видеокарты, общий/свободный объём ОЗУ, выделенная память
+  и итоговые JVM-аргументы; отправка на Discord webhook, если он задан.
 - Запуск через [CmlLib.Core](https://github.com/CmlLib/CmlLib.Core) 4.1.0 в
-  оффлайн-режиме. При `ExitCode != 0` показывается тёмное окно с ошибкой и ссылкой
-  на `logs/latest.log`.
+  оффлайн-режиме; при `ExitCode != 0` показывается окно с ошибкой и ссылкой на лог.
+- Проверка свободной ОЗУ перед запуском игры (OK/Cancel, можно отменить запуск).
 
 ## Сборка
 
-Нужен .NET 8 SDK (Windows):
+Нужен .NET 8 SDK (Windows). В корне репозитория лежит `EscapeBook.sln`.
 
 ```powershell
 dotnet restore
-dotnet build -c Release
-dotnet run
+dotnet build
 ```
 
-Готовый `.exe` появится в `bin\Release\net8.0-windows\`. Рядом с ним уже лежит
-`config.json` (копируется из корня проекта автоматически).
+`dotnet build` собирает оба проекта. Проверка релизной сборки:
+
+```powershell
+dotnet build EscapeBook.sln -c Release
+```
+
+Запуск из исходников:
+
+```powershell
+dotnet run --project EscapeBook.csproj
+```
+
+### Публикация (framework-dependent, win-x64)
+
+```powershell
+# Основной лаунчер -> publish/client, затем архив для GitHub Releases
+dotnet publish EscapeBook.csproj -c Release -r win-x64 --self-contained false -o publish/client
+Compress-Archive -Path publish/client/* -DestinationPath publish/EscBClient.zip -Force
+
+# Загрузчик -> publish/bootstrapper
+dotnet publish EscapeBookBootstrapper/EscapeBookBootstrapper.csproj -c Release -r win-x64 --self-contained false -o publish/bootstrapper
+```
+
+Подробный порядок публикации и релиза — в [`GITHUB_SETUP.md`](GITHUB_SETUP.md).
 
 ## Настройка GitHub
 
-1. Загрузите `config.json` в репозиторий, например в ветку `main`.
-2. В `Services/ConfigService.cs` замените заглушку:
+1. Загрузите `config.json` в репозиторий и замените в
+   `Services/ConfigService.cs` константу `CONFIG_URL` на Raw-ссылку.
+2. В `EscapeBookBootstrapper/Bootstrapper.cs` укажите владельца и имя
+   репозитория с релизами:
 
    ```csharp
-   public const string CONFIG_URL =
-       "https://raw.githubusercontent.com/your-account/your-repo/main/config.json";
+   private const string GitHubOwner = "your-github-owner";
+   private const string GitHubRepo  = "your-github-repo";
    ```
 
-3. Загрузите ZIP сборки клиента (например, в GitHub Releases) и укажите ссылку в
-   `client_zip_url`.
-4. Укажите желаемую версию ванильного Minecraft в `mc_version` и, при
-   необходимости, Discord webhook в `discord_webhook_url`.
+3. В релизе GitHub должны лежать `EscapeBookBootstrapper.exe` и
+   `EscBClient.zip`.
+
+Полная инструкция: [`GITHUB_SETUP.md`](GITHUB_SETUP.md).
 
 ### Поля config.json
 
 | Поле | Назначение |
 | --- | --- |
-| `version` | Версия сборки. Сравнивается с `%APPDATA%\.EscapeBook\.client_version`. |
-| `client_zip_url` | Прямая ссылка на ZIP с файлами клиента (mods, config, resourcepacks и т.д.). |
-| `mc_version` | Версия Minecraft, которую устанавливает и запускает CmlLib.Core. |
-| `default_jvm_args` | JVM-аргументы по умолчанию с GitHub. Объединяются с локальными. |
+| `jvm_preset_version` | Версия пресета JVM-аргументов. Растёт — аргументы обновляются у игроков. |
+| `default_jvm_args` | JVM-аргументы по умолчанию. |
 | `discord_webhook_url` | Webhook для телеметрии. Пусто — телеметрия отключена. |
+| `banner_url` | Прямая ссылка на удалённый баннер. |
+| `banner_hash` | SHA-256 баннера (64 hex-символа). |
+| `builds[]` | Список сборок: `id`, `name`, `mc_version`, `version`, `client_zip_url`. |
+| `optional_mods[]` | Доп. моды: `name`, `description`, `file_prefixes`, `enabled_by_default`. |
 
-Если GitHub недоступен, лаунчер сначала использует кэш
-`%APPDATA%\.EscapeBook\.launcher_config.json`, затем локальный `config.json`
-рядом с `.exe`. Если `client_zip_url` пуст, обновление сборки пропускается, а
-Minecraft всё равно устанавливается и запускается.
+### Поля user_settings.json
+
+| Поле | Назначение |
+| --- | --- |
+| `nickname` | Игровой ник. |
+| `ramMb` | Выделенная память, МБ. |
+| `customJvmArgs` | JVM-аргументы игрока. |
+| `javaPath` | Ручной путь к `javaw.exe` (пусто — автоопределение). |
+| `selectedBuildId` | Последняя выбранная сборка. |
+| `optionalModStates` | Состояние переключателей модов (`имя` → `bool`). |
+| `applied_jvm_preset_version` | Применённая версия пресета JVM. |
 
 ## Где лежат данные
 
 ```
-%APPDATA%\.EscapeBook\
-├── .client_version          версия установленной сборки
-├── .launcher_config.json    кэш удалённого конфига
-├── user_settings.json       ник, ОЗУ, JVM-аргументы, путь к Java
-├── launcher.log             журнал лаунчера
-├── logs\latest.log          лог Minecraft
-├── versions\                версии Minecraft (CmlLib)
-├── libraries\               библиотеки
-├── assets\                  ресурсы
-├── runtime\                 скачанный рантайм Java
-├── mods\ config\ ...        файлы вашей сборки из ZIP
-└── options.txt              настройки игрока (не перезаписываются)
+%APPDATA%\.escapebook\
+├── user_settings.json          настройки игрока
+├── launcher.log                журнал основного лаунчера
+├── .launcher_config.json       кэш удалённого конфига
+├── assets\banner.png           баннер (встроенный или скачанный)
+├── launcher\                   установленный клиент (управляет bootstrapper)
+│   ├── EscBClient.exe
+│   ├── .bootstrapper_version   локальный тег последнего обновления
+│   └── bootstrapper.log        журнал загрузчика
+└── instances\
+    └── <id сборки>\
+        ├── .client_version     версия установленного патча
+        ├── version.txt         маркер версии для статуса сборки
+        ├── .client_zip_url     URL архива (для обнаружения изменений)
+        ├── logs\latest.log     лог Minecraft
+        ├── mods\               моды инстанса (.disabled учитывается)
+        └── ...                 файлы Minecraft (CmlLib)
 ```
 
-ZIP может содержать файлы в корне или в одной общей папке — она автоматически
-срезается при распаковке. Защита от path traversal в архиве включена.
+`options.txt` игрока никогда не перезаписывается при обновлении сборки.
 
 ## JVM-аргументы
 
-`default_jvm_args` + локальные аргументы объединяются. `-Xmx` и `-Xms` из текста
-игнорируются, потому что память всегда задаётся ползунком. К аргументам также
-добавляются оптимизации CmlLib по умолчанию (G1GC).
+Игрок редактирует весь список аргументов в настройках. `default_jvm_args` из
+`config.json` применяются только при первом запуске или при росте
+`jvm_preset_version`. `-Xmx` и `-Xms` из текста игнорируются — память всегда
+задаётся ползунком. К аргументам также добавляются оптимизации CmlLib (G1GC).
 
 ## Примечания
 
-- Путь к Java: сначала ручной из настроек, затем рантайм, установленный CmlLib,
-  затем системная Java (`JAVA_HOME`, `PATH`, папки популярных вендоров).
+- Путь к Java: ручной из настроек → рантайм, установленный CmlLib → системная
+  Java (`JAVA_HOME`, `PATH`, популярные вендоры).
 - Телеметрия отправляется до запуска игры и никогда не блокирует запуск при
   ошибке сети.
 - Лаунчер не закрывает Minecraft при закрытии окна лаунчера.
-- Для работы WMI-запросов нужен обычный Windows; пакет `System.Management` уже
-  подключён.
+- Для WMI-запросов нужен обычный Windows; пакет `System.Management` подключён.
+- Загрузчик публикуется как framework-dependent: пользователю нужен
+  .NET 8 Desktop Runtime (он же нужен и основному лаунчеру).

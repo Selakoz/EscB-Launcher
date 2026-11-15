@@ -176,20 +176,18 @@ https://raw.githubusercontent.com/ВАШ_АККАУНТ/escapebook-launcher/main
 
 ## 9. Перед финальной сборкой
 
-Откройте `Services/ConfigService.cs` и убедитесь, что `CONFIG_URL` указывает
-на ваш реальный Raw-адрес `config.json`.
-
-Соберите проект:
+1. Откройте `Services/ConfigService.cs` и убедитесь, что `CONFIG_URL` указывает
+   на ваш реальный Raw-адрес `config.json`.
+2. Откройте `EscapeBookBootstrapper/Bootstrapper.cs` и замените константы
+   `GitHubOwner` / `GitHubRepo` на репозиторий, где будут лежать релизы.
+3. Соберите решение:
 
 ```powershell
 dotnet restore
-dotnet build -c Release
-dotnet publish -c Release -r win-x64 --self-contained false
+dotnet build EscapeBook.sln -c Release
 ```
 
-Готовый `EscBClient.exe` будет в `bin\Release\net8.0-windows\` (или в
-`publish\` после publish). Рядом с ним уже лежит пример `config.json`
-(копируется при сборке).
+Полный процесс публикации обоих приложений и оформления релиза — в разделе 11.
 
 ## 10. Структура данных на ПК игрока
 
@@ -209,3 +207,84 @@ dotnet publish -c Release -r win-x64 --self-contained false
 ```
 
 `options.txt` игрока никогда не перезаписывается при обновлении сборки.
+
+## 11. Сборка и релиз двух проектов
+
+Проект состоит из двух приложений:
+
+| Проект | Что это | Файл для игроков |
+| --- | --- | --- |
+| `EscapeBookBootstrapper/EscapeBookBootstrapper.csproj` | лёгкий загрузчик и автообновление | `EscapeBookBootstrapper.exe` |
+| `EscapeBook.csproj` | основной лаунчер (WinForms) | `EscBClient.zip` |
+
+### 11.1. Подготовка
+
+1. Укажите реальный `CONFIG_URL` в `Services/ConfigService.cs`.
+2. Укажите репозиторий в `EscapeBookBootstrapper/Bootstrapper.cs`:
+
+   ```csharp
+   private const string GitHubOwner = "your-github-owner";
+   private const string GitHubRepo  = "your-github-repo";
+   ```
+
+3. Соберите оба проекта:
+
+   ```powershell
+   dotnet build EscapeBook.sln -c Release
+   ```
+
+### 11.2. Публикация основного лаунчера (EscBClient.zip)
+
+```powershell
+dotnet publish EscapeBook.csproj -c Release -r win-x64 --self-contained false -o publish/client
+Compress-Archive -Path publish/client/* -DestinationPath publish/EscBClient.zip -Force
+```
+
+Требования к архиву:
+
+- `EscBClient.exe` должен лежать **в корне** архива (загрузчик проверяет его
+  наличие перед распаковкой);
+- `config.json` копируется в `publish/client` автоматически при публикации;
+- архив должен содержать все файлы из `publish/client` (dll, deps.json,
+  runtimeconfig.json, config.json).
+
+> Не добавляйте в `EscBClient.zip` папку `user_settings.json` или инстансы —
+> они хранятся отдельно в `%APPDATA%\.escapebook`.
+
+### 11.3. Публикация загрузчика (EscapeBookBootstrapper.exe)
+
+```powershell
+dotnet publish EscapeBookBootstrapper/EscapeBookBootstrapper.csproj -c Release -r win-x64 --self-contained false -o publish/bootstrapper
+```
+
+Готовый `publish/bootstrapper/EscapeBookBootstrapper.exe` занимает ~0.2 МБ
+(вместе со всеми файлами публикации — ~0.2 МБ, значительно меньше лимита 8 МБ).
+Публикация framework-dependent: игроку нужен .NET 8 Desktop Runtime.
+
+### 11.4. Оформление GitHub Release
+
+1. Откройте репозиторий → **Releases** → **Create a new release**.
+2. Тег: например `v1.0.0` (загрузчик сравнивает именно `tag_name`).
+3. Прикрепите **ровно два** ассета:
+   - `EscapeBookBootstrapper.exe` — точка входа для игроков;
+   - `EscBClient.zip` — архив основного лаунчера.
+4. Опубликуйте релиз.
+
+### 11.5. Как обновляются игроки
+
+1. Игрок запускает `EscapeBookBootstrapper.exe`.
+2. Загрузчик запрашивает
+   `https://api.github.com/repos/<OWNER>/<REPO>/releases/latest`.
+3. Находит ассет `EscBClient.zip` и сравнивает `tag_name` с
+   `%APPDATA%\.escapebook\launcher\.bootstrapper_version`.
+4. Если тег новее (или файла нет) — скачивает архив, распаковывает в
+   `%APPDATA%\.escapebook\launcher\`, сохраняет тег и запускает `EscBClient.exe`.
+5. Если GitHub недоступен — запускает уже установленный клиент; ошибки пишутся в
+   `%APPDATA%\.escapebook\launcher\bootstrapper.log`.
+
+Важно: чтобы выпустить обновление, достаточно создать новый релиз с новым тегом
+(`v1.0.1`, `v1.0.2`, …) и приложить к нему новый `EscBClient.zip`.
+
+
+
+

@@ -32,4 +32,11 @@
     <EmbeddedResource Include="banner.png" />
   </ItemGroup>
 
+  <!-- The bootstrapper is a separate project inside this folder; keep it out of the launcher build. -->
+  <ItemGroup>
+    <Compile Remove="EscapeBookBootstrapper\**\*.cs" />
+    <None Remove="EscapeBookBootstrapper\**" />
+    <EmbeddedResource Remove="EscapeBookBootstrapper\**" />
+  </ItemGroup>
+
 </Project>
