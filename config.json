@@ -1,30 +1,27 @@
-﻿{
-  // Р’РќРРњРђРќРР•: Р·Р°РјРµРЅРёС‚Рµ Selakoz Рё EscB-Launcher РЅР° РІР°С€ GitHub-Р°РєРєР°СѓРЅС‚ Рё РёРјСЏ
-  // СЂРµРїРѕР·РёС‚РѕСЂРёСЏ РІРѕ РІСЃРµС… URL РЅРёР¶Рµ (test-СЃР±РѕСЂРєР°, season-СЃР±РѕСЂРєРё, banner_url).
-  // РљРѕРјРјРµРЅС‚Р°СЂРёРё РІ СЌС‚РѕРј С„Р°Р№Р»Рµ РґРѕРїСѓСЃС‚РёРјС‹: Р»Р°СѓРЅС‡РµСЂ С‡РёС‚Р°РµС‚ JSON СЃ ReadCommentHandling.Skip.
+{
   "jvm_preset_version": 1,
   "default_jvm_args": "-XX:+UnlockExperimentalVMOptions -XX:+UseG1GC -XX:G1NewSizePercent=20 -XX:G1ReservePercent=20 -XX:MaxGCPauseMillis=50 -XX:G1HeapRegionSize=16M -Dlog4j2.formatMsgNoLookups=true",
   "discord_webhook_url": "",
   "banner_url": "https://raw.githubusercontent.com/Selakoz/EscB-Launcher/main/assets/banner.png",
-  "banner_hash": "5e0b...РІР°С€_sha256_С…СЌС€_Р±Р°РЅРЅРµСЂР°...",
+  "banner_hash": "32be609e11af853c0b3d5bb7c60a1f97ad601f4dadefb1db4492b4afc9fa43a2",
   "builds": [
     {
       "id": "test",
-      "name": "РўРµСЃС‚РѕРІР°СЏ СЃР±РѕСЂРєР°",
+      "name": "Тестовая сборка",
       "mc_version": "1.21.1",
       "version": "0.0.1",
       "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.1/EscBClient.zip"
     },
     {
       "id": "season2",
-      "name": "РЎРµР·РѕРЅ 2 вЂ” РђРєС‚СѓР°Р»СЊРЅС‹Р№",
+      "name": "Сезон 2 — Актуальный",
       "mc_version": "1.21.1",
       "version": "1.0.0",
       "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v1.0.0/season2.zip"
     },
     {
       "id": "season1",
-      "name": "РЎРµР·РѕРЅ 1 вЂ” РђСЂС…РёРІ",
+      "name": "Сезон 1 — Архив",
       "mc_version": "1.20.1",
       "version": "1.0.0",
       "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v1.0.0/season1.zip"
@@ -32,23 +29,22 @@
   ],
   "optional_mods": [
     {
-      "name": "РЁРµР№РґРµСЂС‹ (Iris + Sodium)",
-      "description": "РЈР»СѓС‡С€Р°СЋС‚ РіСЂР°С„РёРєСѓ Рё РїРѕРІС‹С€Р°СЋС‚ FPS. РўСЂРµР±СѓСЋС‚ СѓСЃС‚Р°РЅРѕРІР»РµРЅРЅС‹С… Р±Р°РЅРѕРє РІ РїР°РїРєРµ mods РёРЅСЃС‚Р°РЅСЃР°.",
+      "name": "Шейдеры (Iris + Sodium)",
+      "description": "Улучшают графику и повышают FPS. Требуют установленных банок в папке mods инстанса.",
       "file_prefixes": ["iris-", "oculus-", "sodium-"],
       "enabled_by_default": true
     },
     {
-      "name": "Voxy + Р°РґРґРѕРЅС‹",
-      "description": "РџР°РєРµС‚ РѕРїС‚РёРјРёР·Р°С†РёРё Рё РІРёР·СѓР°Р»СЊРЅС‹С… СѓР»СѓС‡С€РµРЅРёР№ РЅР° РѕСЃРЅРѕРІРµ Voxy.",
+      "name": "Voxy + аддоны",
+      "description": "Пакет оптимизации и визуальных улучшений на основе Voxy.",
       "file_prefixes": ["voxy-", "voxyaddons-"],
       "enabled_by_default": true
     },
     {
-      "name": "Р”РѕРїРѕР»РЅРёС‚РµР»СЊРЅС‹Рµ РІРёР·СѓР°Р»СЊРЅС‹Рµ Р°РґРґРѕРЅС‹",
-      "description": "Р”РѕРїРѕР»РЅРёС‚РµР»СЊРЅР°СЏ РіСЂР°С„РёРєР° Рё СЌС„С„РµРєС‚С‹, РјРѕРіСѓС‚ СЃРЅРёР¶Р°С‚СЊ FPS РЅР° СЃР»Р°Р±С‹С… РџРљ.",
+      "name": "Дополнительные визуальные аддоны",
+      "description": "Дополнительная графика и эффекты, могут снижать FPS на слабых ПК.",
       "file_prefixes": ["extra-visual-"],
       "enabled_by_default": false
     }
   ]
 }
-
