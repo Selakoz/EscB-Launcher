@@ -5,7 +5,7 @@
   "jvm_preset_version": 1,
   "default_jvm_args": "-XX:+UnlockExperimentalVMOptions -XX:+UseG1GC -XX:G1NewSizePercent=20 -XX:G1ReservePercent=20 -XX:MaxGCPauseMillis=50 -XX:G1HeapRegionSize=16M -Dlog4j2.formatMsgNoLookups=true",
   "discord_webhook_url": "",
-  "banner_url": "https://raw.githubusercontent.com/your-account/your-repo/main/assets/banner.png",
+  "banner_url": "https://raw.githubusercontent.com/Selakoz/EscB-Launcher/main/assets/banner.png",
   "banner_hash": "5e0b...РІР°С€_sha256_С…СЌС€_Р±Р°РЅРЅРµСЂР°...",
   "builds": [
     {
@@ -13,7 +13,7 @@
       "name": "РўРµСЃС‚РѕРІР°СЏ СЃР±РѕСЂРєР°",
       "mc_version": "1.21.1",
       "version": "0.0.1",
-      "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.1/test-build.zip"
+      "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.1/EscBClient.zip"
     },
     {
       "id": "season2",
@@ -51,3 +51,4 @@
     }
   ]
 }
+
