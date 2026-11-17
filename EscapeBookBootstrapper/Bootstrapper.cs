@@ -18,8 +18,8 @@ namespace EscapeBookBootstrapper;
 internal static class Bootstrapper
 {
     // TODO: replace the placeholders with the repository that publishes the releases.
-    private const string GitHubOwner = "your-github-owner";
-    private const string GitHubRepo = "your-github-repo";
+    private const string GitHubOwner = "Selakoz";
+    private const string GitHubRepo = "EscB-Launcher";
 
     private const string ReleaseAssetName = "EscBClient.zip";
     private const string MainExecutableName = "EscBClient.exe";
