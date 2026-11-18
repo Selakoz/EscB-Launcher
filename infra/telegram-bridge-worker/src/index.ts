@@ -621,8 +621,9 @@ async function handleDsToTg(request: Request, env: Env): Promise<Response> {
       ? player.mc_nickname.trim()
       : "не привязан";
 
+  // MarkdownV2: литеральные скобки вокруг ника тоже обязаны быть экранированы.
   const telegramText =
-    `**${escapeTelegramMarkdown(displayName)}** (${escapeTelegramMarkdown(mcNick)}): ` +
+    `**${escapeTelegramMarkdown(displayName)}** \\(${escapeTelegramMarkdown(mcNick)}\\): ` +
     escapeTelegramMarkdown(textValue);
 
   // Reply-тред: Discord message_id -> telegram_message_id.
