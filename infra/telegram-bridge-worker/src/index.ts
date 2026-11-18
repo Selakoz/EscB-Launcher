@@ -104,6 +104,25 @@ function escapeMarkdown(value: string): string {
 
 // ------------------------------------------------------------ Telegram API
 
+// Разбор ошибок API без утечки секретов (только description/message).
+async function readTelegramDescription(response: Response): Promise<string> {
+  try {
+    const data = (await response.json()) as { description?: string };
+    return typeof data.description === "string" ? data.description : "";
+  } catch {
+    return "";
+  }
+}
+
+async function readDiscordDescription(response: Response): Promise<string> {
+  try {
+    const data = (await response.json()) as { message?: string };
+    return typeof data.message === "string" ? data.message : "";
+  } catch {
+    return "";
+  }
+}
+
 async function sendTelegramText(
   env: Env,
   chatId: string,
@@ -134,7 +153,12 @@ async function sendTelegramText(
     });
 
     if (!response.ok) {
-      console.error("tg-bridge: telegram sendMessage returned", response.status);
+      const description = await readTelegramDescription(response);
+      console.error(
+        "tg-bridge: telegram sendMessage failed:",
+        response.status,
+        description
+      );
       return null;
     }
 
@@ -212,7 +236,12 @@ async function sendTelegramMedia(
     });
 
     if (!response.ok) {
-      console.error(`tg-bridge: telegram ${method} returned`, response.status);
+      const description = await readTelegramDescription(response);
+      console.error(
+        `tg-bridge: telegram ${method} failed:`,
+        response.status,
+        description
+      );
       return null;
     }
 
@@ -261,7 +290,12 @@ async function sendDiscordText(
     );
 
     if (!response.ok) {
-      console.error("tg-bridge: discord message returned", response.status);
+      const description = await readDiscordDescription(response);
+      console.error(
+        "tg-bridge: discord message failed:",
+        response.status,
+        description
+      );
       return null;
     }
 
@@ -373,7 +407,12 @@ async function sendDiscordMedia(
     );
 
     if (!response.ok) {
-      console.error("tg-bridge: discord media message returned", response.status);
+      const description = await readDiscordDescription(response);
+      console.error(
+        "tg-bridge: discord media message failed:",
+        response.status,
+        description
+      );
       return null;
     }
 
@@ -550,6 +589,21 @@ async function handleDsToTg(request: Request, env: Env): Promise<Response> {
     return json({ ok: true, skipped: true });
   }
 
+  // English diagnostic (no secrets): what the listener actually sent.
+  console.log(
+    "DS->TG payload:",
+    JSON.stringify({
+      ds_id,
+      ds_nick,
+      message_id: messageId,
+      attachments: attachments.length,
+      reference_message_id:
+        typeof payload.reference_message_id === "string"
+          ? payload.reference_message_id
+          : null,
+    })
+  );
+
   // Идемпотентность по message_id (защита от повторных POST-ов listener-а).
   if (messageId.length > 0) {
     const now = Math.floor(Date.now() / 1000);
@@ -574,24 +628,32 @@ async function handleDsToTg(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // Очистка старых соответствий (30 дней).
+  // Очистка старых соответствий (30 дней). Каждая операция изолирована:
+  // отсутствие таблиц не должно блокировать доставку.
   try {
     await env.DB.prepare(
       "DELETE FROM message_map_ds_to_tg WHERE created_at < strftime('%s','now','-30 days')"
     ).run();
+  } catch (err) {
+    console.log("tg-bridge: mapping cleanup (ds->tg) skipped:", String(err));
+  }
+
+  try {
     await env.DB.prepare(
       "DELETE FROM message_map_tg_to_ds WHERE created_at < strftime('%s','now','-30 days')"
     ).run();
   } catch (err) {
-    console.error("tg-bridge: mapping cleanup failed:", String(err));
+    console.log("tg-bridge: mapping cleanup (tg->ds) skipped:", String(err));
   }
 
-  // Единый Telegram-чат.
+  // Единый Telegram-чат (обязателен для доставки).
   const groupChatId = getChatId(env.TG_CHAT_ID);
   if (groupChatId.length === 0) {
-    console.log("Unlinked player message dropped (no TG_CHAT_ID configured)");
-    return json({ ok: true, skipped: true });
+    console.log("TG_CHAT_ID is not configured; message skipped");
+    return json({ ok: false, reason: "tg_chat_id_not_configured" });
   }
+
+  console.log("Target Telegram chat:", groupChatId, "source: env.TG_CHAT_ID");
 
   // Display name: ds_nick -> ds_username -> "Игрок".
   let displayName: string;

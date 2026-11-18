@@ -248,6 +248,18 @@ https://escapebook-discord.<ваш-аккаунт>.workers.dev
   - `tg_delivery_failed` — прочие сбои доставки; клиент предлагает повторить
     позже или написать @Selakoz.
 
+## 9. Variables против Secrets при деплое из GitHub Actions
+
+- `wrangler deploy` заменяет **все Variables** значениями из `[vars]` в
+  `wrangler.toml`; Dashboard Variables перезаписываются (в т.ч. пустой строкой).
+- **Secrets** деплой не затирает: `TG_BOT_TOKEN`, `DS_BOT_TOKEN`,
+  `TG_WEBHOOK_SECRET`, `BRIDGE_SECRET`, `DISCORD_CHANNEL_ID` — только Secrets.
+- `TG_CHAT_ID` в репозитории пустой (`""`); реальный ID подставляется workflow-ом
+  из **GitHub repository secret `TG_CHAT_ID`** (`-100…`). Если секрет не задан,
+  workflow падает на шаге `Inject route config`, и работающий воркер не меняется.
+- После правки `wrangler.toml`/секретов перезапустите workflow
+  «Deploy escapebook-tg-bridge» (Actions → Run workflow).
+
 ## Проверка
 - `GET https://escapebook-auth.<ваш-аккаунт>.workers.dev/health` — должен вернуть 200
   (после реализации endpoint'а; сейчас placeholder возвращает `placeholder`).

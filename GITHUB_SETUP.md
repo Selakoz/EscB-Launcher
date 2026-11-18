@@ -330,6 +330,26 @@ Dashboard → Workers → `escapebook-auth` → Settings → Variables and Secre
 возвращает `ds_dm_blocked`, а лаунчер показывает инструкцию включить ЛС. Токен хранится
 только в Cloudflare; в клиенте его нет.
 
+## 14. Variables против Secrets при деплое из GitHub Actions
+
+- `wrangler deploy` **полностью заменяет Variables воркера** значениями из блока
+  `[vars]` в `infra/telegram-bridge-worker/wrangler.toml`. Если переменная задана
+  в Dashboard как Variable, но в `[vars]` её нет (или она пустая) — после деплоя
+  значение **затрётся**.
+- **Secrets** (Dashboard → Settings → Variables and Secrets → тип Secret) деплой
+  **не затирает**: `TG_BOT_TOKEN`, `DS_BOT_TOKEN`, `TG_WEBHOOK_SECRET`,
+  `BRIDGE_SECRET`, `DISCORD_CHANNEL_ID` хранятся только как Secrets.
+- Поэтому в репозитории `TG_CHAT_ID = ""`, а реальный ID группы подставляется
+  workflow-ом «Deploy escapebook-tg-bridge» из **repository secret `TG_CHAT_ID`**
+  (GitHub → Settings → Secrets and variables → Actions → New repository secret,
+  значение вида `-1001234567890`). Если секрет не задан, workflow падает на шаге
+  `Inject route config` и **не трогает** работающий воркер.
+- После изменения `wrangler.toml`, секретов или кода запустите workflow заново:
+  Actions → «Deploy escapebook-tg-bridge» → Run workflow.
+
+Итог: чтобы DS→TG не сломался после деплоя, `TG_CHAT_ID` живёт в
+GitHub-секрете, а не в Dashboard Variable.
+
 
 
 

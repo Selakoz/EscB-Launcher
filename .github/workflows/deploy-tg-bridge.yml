@@ -32,6 +32,19 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
+      # Database/route IDs are not stored in the repository: inject them from
+      # repository secrets before deploying (deploy overwrites Dashboard vars).
+      - name: Inject route config
+        env:
+          TG_CHAT_ID_SECRET: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          if [ -z "$TG_CHAT_ID_SECRET" ]; then
+            echo "::error::Repository secret TG_CHAT_ID is not set (see GITHUB_SETUP.md)."
+            exit 1
+          fi
+          sed -i "s|TG_CHAT_ID = \"\"|TG_CHAT_ID = \"$TG_CHAT_ID_SECRET\"|" wrangler.toml
+          grep -q "TG_CHAT_ID = \"$TG_CHAT_ID_SECRET\"" wrangler.toml
+
       - name: Deploy worker
         uses: cloudflare/wrangler-action@v3
         with:
