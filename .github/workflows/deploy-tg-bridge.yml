@@ -1,0 +1,27 @@
+name: Deploy Telegram Bridge Worker
+
+on:
+  workflow_dispatch: # Позволяет запускать вручную из вкладки Actions на GitHub
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: infra/telegram-bridge-worker
+        run: npm install
+
+      - name: Deploy to Cloudflare
+        working-directory: infra/telegram-bridge-worker
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
