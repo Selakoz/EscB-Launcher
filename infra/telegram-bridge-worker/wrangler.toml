@@ -14,7 +14,7 @@ database_id = "add53d51-046d-41b2-95bb-272610cb2814"
 # repository secret `TG_CHAT_ID` при деплое (см. шаг "Inject route config").
 # Формат: -1001234567890 (супергруппа). Пусто -> /bridge/ds-to-tg вернёт
 # {"ok":false,"reason":"tg_chat_id_not_configured"}.
-TG_CHAT_ID = ""
+TG_CHAT_ID = "-1004439376746"
 
 # DISCORD_CHANNEL_ID намеренно НЕ объявлен здесь: он хранится как Secret
 # (Dashboard -> Settings -> Variables and Secrets), секреты деплой не затирает.

@@ -497,20 +497,37 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const discordText = `**${displayName}**: ${text}`;
 
   // Reply-тред: ищем Discord-сообщение, на которое ответили в Telegram.
+  // Проверяем ОБЕ таблицы: ответ может быть на сообщение, которое бот переслал
+  // из Discord (тогда связь в message_map_ds_to_tg).
   let referenceMessageId: string | undefined;
   const replyToId = message.reply_to_message?.message_id;
   if (typeof replyToId === "number") {
     try {
-      const map = await env.DB.prepare(
+      const map1 = await env.DB.prepare(
         "SELECT discord_message_id FROM message_map_tg_to_ds WHERE telegram_message_id = ?"
       )
         .bind(String(replyToId))
         .first<{ discord_message_id: string }>();
-      if (map?.discord_message_id) {
-        referenceMessageId = map.discord_message_id;
+      if (map1?.discord_message_id) {
+        referenceMessageId = map1.discord_message_id;
       }
     } catch (err) {
-      console.error("tg-bridge: reply lookup failed:", String(err));
+      console.log("Reply lookup (tg->ds table) failed:", String(err));
+    }
+
+    if (!referenceMessageId) {
+      try {
+        const map2 = await env.DB.prepare(
+          "SELECT discord_message_id FROM message_map_ds_to_tg WHERE telegram_message_id = ?"
+        )
+          .bind(String(replyToId))
+          .first<{ discord_message_id: string }>();
+        if (map2?.discord_message_id) {
+          referenceMessageId = map2.discord_message_id;
+        }
+      } catch (err) {
+        console.log("Reply lookup (ds->tg table) failed:", String(err));
+      }
     }
   }
 
@@ -689,6 +706,8 @@ async function handleDsToTg(request: Request, env: Env): Promise<Response> {
     escapeTelegramMarkdown(textValue);
 
   // Reply-тред: Discord message_id -> telegram_message_id.
+  // Ищем в ОБЕИХ таблицах: исходное сообщение могло прийти из Telegram и быть
+  // пересланным ботом в Discord (тогда связь живёт в message_map_tg_to_ds).
   let replyToTelegramId: string | undefined;
   const referenceMessageId =
     typeof payload.reference_message_id === "string"
@@ -696,16 +715,31 @@ async function handleDsToTg(request: Request, env: Env): Promise<Response> {
       : "";
   if (referenceMessageId.length > 0) {
     try {
-      const map = await env.DB.prepare(
+      const map1 = await env.DB.prepare(
         "SELECT telegram_message_id FROM message_map_ds_to_tg WHERE discord_message_id = ?"
       )
         .bind(referenceMessageId)
         .first<{ telegram_message_id: string }>();
-      if (map?.telegram_message_id) {
-        replyToTelegramId = map.telegram_message_id;
+      if (map1?.telegram_message_id) {
+        replyToTelegramId = map1.telegram_message_id;
       }
     } catch (err) {
-      console.error("tg-bridge: reply lookup (ds->tg) failed:", String(err));
+      console.log("Reply lookup (ds->tg table) failed:", String(err));
+    }
+
+    if (!replyToTelegramId) {
+      try {
+        const map2 = await env.DB.prepare(
+          "SELECT telegram_message_id FROM message_map_tg_to_ds WHERE discord_message_id = ?"
+        )
+          .bind(referenceMessageId)
+          .first<{ telegram_message_id: string }>();
+        if (map2?.telegram_message_id) {
+          replyToTelegramId = map2.telegram_message_id;
+        }
+      } catch (err) {
+        console.log("Reply lookup (tg->ds table) failed:", String(err));
+      }
     }
   }
 
