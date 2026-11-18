@@ -73,15 +73,23 @@ dotnet build EscapeBook.sln -c Release
 dotnet run --project EscapeBook.csproj
 ```
 
-### Публикация (framework-dependent, win-x64)
+### Публикация
+
+Архитектура поставки: **bootstrapper — крошечный standalone EXE** (.NET Framework 4.8,
+есть на любой Windows 10/11, ~30 КБ), **EscBClient.zip — self-contained** (внутри
+полный .NET 8 Desktop Runtime, поэтому игра запускается на чистой Windows).
 
 ```powershell
-# Основной лаунчер -> publish/client, затем архив для GitHub Releases
-dotnet publish EscapeBook.csproj -c Release -r win-x64 --self-contained false -o publish/client
+# Всё одной командой (сборка + publish + архив + размеры):
+powershell -ExecutionPolicy Bypass -File publish.ps1
+
+# Или вручную:
+# Основной лаунчер (self-contained) -> publish/client, затем архив для GitHub Releases
+dotnet publish EscapeBook.csproj -c Release -r win-x64 --self-contained true -o publish/client
 Compress-Archive -Path publish/client/* -DestinationPath publish/EscBClient.zip -Force
 
-# Загрузчик -> publish/bootstrapper
-dotnet publish EscapeBookBootstrapper/EscapeBookBootstrapper.csproj -c Release -r win-x64 --self-contained false -o publish/bootstrapper
+# Загрузчик (net48, standalone) -> publish/bootstrapper
+dotnet publish EscapeBookBootstrapper/EscapeBookBootstrapper.csproj -c Release -o publish/bootstrapper
 ```
 
 Подробный порядок публикации и релиза — в [`GITHUB_SETUP.md`](GITHUB_SETUP.md).
@@ -166,5 +174,5 @@ dotnet publish EscapeBookBootstrapper/EscapeBookBootstrapper.csproj -c Release -
   ошибке сети.
 - Лаунчер не закрывает Minecraft при закрытии окна лаунчера.
 - Для WMI-запросов нужен обычный Windows; пакет `System.Management` подключён.
-- Загрузчик публикуется как framework-dependent: пользователю нужен
-  .NET 8 Desktop Runtime (он же нужен и основному лаунчеру).
+- Загрузчик собирается под .NET Framework 4.8 и не требует установки .NET 8;
+  основной лаунчер поставляется self-contained (runtime внутри `EscBClient.zip`).

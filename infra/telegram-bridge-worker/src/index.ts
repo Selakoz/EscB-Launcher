@@ -22,6 +22,7 @@ interface TelegramUser {
   id?: number;
   username?: string;
   first_name?: string;
+  is_bot?: boolean;
 }
 
 interface TelegramFileMeta {
@@ -89,9 +90,11 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
-// Legacy Markdown (parse_mode: "Markdown"): экранируем _ * ` [
-function escapeMdLegacy(value: string): string {
-  return value.replace(/([_*`\[])/g, "\\$1");
+// Telegram MarkdownV2: экранируем полный набор спецсимволов.
+// Legacy parse_mode "Markdown" не поддерживает escape для "." "!" "(" ")" и др.,
+// поэтому используется MarkdownV2 — синтаксис **bold** в нём работает так же.
+function escapeTelegramMarkdown(value: string): string {
+  return value.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
 }
 
 // Discord Markdown: экранируем спецсимволы, чтобы имена не ломали разметку.
@@ -117,7 +120,7 @@ async function sendTelegramText(
     const body: Record<string, unknown> = {
       chat_id: chatId,
       text: text.substring(0, MAX_TG_TEXT),
-      parse_mode: "Markdown",
+      parse_mode: "MarkdownV2",
     };
     if (replyToMessageId) {
       const replyId = Number(replyToMessageId);
@@ -187,7 +190,7 @@ async function sendTelegramMedia(
     form.append("chat_id", chatId);
     if (caption && caption.trim().length > 0) {
       form.append("caption", caption.substring(0, MAX_CAPTION));
-      form.append("parse_mode", "Markdown");
+      form.append("parse_mode", "MarkdownV2");
     }
     if (replyToMessageId) {
       const replyId = Number(replyToMessageId);
@@ -410,6 +413,12 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
     return json({ ok: true, skipped: true });
   }
 
+  // Part A: никогда не реагируем на сообщения ботов (защита от цикла
+  // Telegram -> Discord -> Telegram).
+  if (message.from?.is_bot) {
+    return json({ ok: true, ignored: "bot_message" });
+  }
+
   const text = typeof message.text === "string"
     ? message.text
     : typeof message.caption === "string"
@@ -418,7 +427,35 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
 
   const tgUsername =
     message.from?.username || message.from?.first_name || "Игрок";
-  const discordText = `**${escapeMarkdown(tgUsername)}**: ${text}`;
+
+  // Minecraft-ник для симметрии с DS->TG: ищем привязанного игрока
+  // по Telegram ID (хранится как TEXT). Не найден -> без скобок.
+  let mcNickname: string | null = null;
+  const tgUserId = message.from?.id?.toString();
+  if (tgUserId) {
+    try {
+      const player = await env.DB.prepare(
+        "SELECT mc_nickname FROM players WHERE tg_id = ?"
+      )
+        .bind(tgUserId)
+        .first<{ mc_nickname: string }>();
+
+      if (
+        player &&
+        typeof player.mc_nickname === "string" &&
+        player.mc_nickname.trim() !== ""
+      ) {
+        mcNickname = player.mc_nickname.trim();
+      }
+    } catch (err) {
+      console.error("tg-bridge: mc nickname lookup failed:", String(err));
+    }
+  }
+
+  const displayName = mcNickname
+    ? `${escapeMarkdown(tgUsername)} (${escapeMarkdown(mcNickname)})`
+    : escapeMarkdown(tgUsername);
+  const discordText = `**${displayName}**: ${text}`;
 
   // Reply-тред: ищем Discord-сообщение, на которое ответили в Telegram.
   let referenceMessageId: string | undefined;
@@ -585,8 +622,8 @@ async function handleDsToTg(request: Request, env: Env): Promise<Response> {
       : "не привязан";
 
   const telegramText =
-    `**${escapeMdLegacy(displayName)}** (${escapeMdLegacy(mcNick)}): ` +
-    escapeMdLegacy(textValue);
+    `**${escapeTelegramMarkdown(displayName)}** (${escapeTelegramMarkdown(mcNick)}): ` +
+    escapeTelegramMarkdown(textValue);
 
   // Reply-тред: Discord message_id -> telegram_message_id.
   let replyToTelegramId: string | undefined;

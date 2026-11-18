@@ -1,0 +1,15 @@
+{
+  "name": "discord-interactions-worker",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "tsc",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "@cloudflare/workers-types": "^4.20240117.0",
+    "wrangler": "^3.25.0",
+    "discord-interactions": "^4.0.0",
+    "tweetnacl": "^1.0.3"
+  }
+}

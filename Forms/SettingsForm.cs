@@ -31,6 +31,12 @@ internal sealed class SettingsForm : BaseDarkForm
     private int _maxRamMb = 8192;
     private bool _suppressEvents;
 
+    /// <summary>
+    /// True when the user pressed "Выйти из аккаунта": the session file has
+    /// been deleted and MainForm must revert to the unauthorized state.
+    /// </summary>
+    public bool LogoutRequested { get; private set; }
+
     public SettingsForm(LauncherConfig config, SettingsSession session, bool isFirstLaunch)
         : base(new Size(540, 460))
     {
@@ -116,7 +122,9 @@ internal sealed class SettingsForm : BaseDarkForm
             BorderColor = Theme.Border,                   // #383850
             BorderSize = 1,
             ForeColor = Theme.Text,
-            Anchor = AnchorStyles.Right | AnchorStyles.Top
+            Anchor = AnchorStyles.Right | AnchorStyles.Top,
+            // Same Y as the logout button: both sit on one horizontal line.
+            Location = new Point(0, 8)
         };
         closeButton.Click += (_, _) =>
         {
@@ -125,6 +133,26 @@ internal sealed class SettingsForm : BaseDarkForm
             Close();
         };
         buttonBar.Controls.Add(closeButton);
+
+        // Logout: deletes auth_session.json and reopens the OTP authorization form.
+        var logoutButton = new RoundedButton
+        {
+            Text = "Выйти из аккаунта",
+            Width = 170,
+            Height = 38,
+            Font = ButtonFont,
+            CornerRadius = 10,
+            NormalBackColor = Theme.Surface,
+            HoverBackColor = Color.FromArgb(58, 32, 40),
+            PressedBackColor = Color.FromArgb(44, 26, 32),
+            BorderColor = Theme.Border,
+            BorderSize = 1,
+            ForeColor = Theme.Danger,
+            Anchor = AnchorStyles.Left | AnchorStyles.Top,
+            Location = new Point(16, 8)
+        };
+        logoutButton.Click += (_, _) => HandleLogout();
+        buttonBar.Controls.Add(logoutButton);
 
         ContentArea.Controls.Add(tabControl);
         ContentArea.Controls.Add(buttonBar);
@@ -376,16 +404,6 @@ internal sealed class SettingsForm : BaseDarkForm
         // AutoSize lets WinForms measure the font metrics so descenders are not clipped.
         header.AutoSize = true;
         AddRow(header, new RowStyle(SizeType.AutoSize), 6);
-
-        var note = UiFactory.Label(
-            layout,
-            "Переключатель сразу переименовывает .jar / .jar.disabled в папке mods инстанса.",
-            NoteFont,
-            Theme.Muted,
-            Theme.Background);
-        note.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        note.AutoSize = true;
-        AddRow(note, new RowStyle(SizeType.AutoSize), 10);
 
         var resetMods = new RoundedButton
         {
@@ -727,5 +745,20 @@ internal sealed class SettingsForm : BaseDarkForm
     {
         _errorLabel.Text = message;
         _errorLabel.Visible = true;
+    }
+
+    // -------------------------------------------------------------- logout
+
+    /// <summary>
+    /// Deletes auth_session.json and closes the settings window; MainForm
+    /// switches back to the unauthorized state (non-intrusive flow — no modal
+    /// re-auth dialog and no application exit).
+    /// </summary>
+    private void HandleLogout()
+    {
+        SessionManager.ClearSession();
+        _session.Save();
+        LogoutRequested = true;
+        Close();
     }
 }

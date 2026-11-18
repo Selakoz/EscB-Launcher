@@ -8,6 +8,7 @@ internal static class LauncherPaths
         ".escapebook");
 
     public static string SettingsFile => Path.Combine(Root, "user_settings.json");
+    public static string AuthSessionFile => Path.Combine(Root, "auth_session.json");
     public static string ConfigCacheFile => Path.Combine(Root, ".launcher_config.json");
     public static string LauncherLogFile => Path.Combine(Root, "launcher.log");
     public static string BannerFile => Path.Combine(Root, "assets", "banner.png");

@@ -77,6 +77,59 @@ internal static class Branding
         }
     }
 
+    private static Image? _telegramAuthIcon;
+    private static bool _telegramAuthIconLoaded;
+    private static Image? _discordAuthIcon;
+    private static bool _discordAuthIconLoaded;
+
+    /// <summary>
+    /// Embedded Telegram auth-button icon (Assets/tg.png).
+    /// Loaded once and cached; returns null when the resource is missing or
+    /// cannot be decoded so callers can fall back to the text glyph.
+    /// </summary>
+    public static Image? LoadTelegramAuthIcon()
+    {
+        if (_telegramAuthIconLoaded)
+            return _telegramAuthIcon;
+
+        _telegramAuthIconLoaded = true;
+        _telegramAuthIcon = LoadAuthIcon("tg.png", "Telegram auth icon load");
+        return _telegramAuthIcon;
+    }
+
+    /// <summary>
+    /// Embedded Discord auth-button icon (Assets/ds.png). Same caching and
+    /// null-fallback contract as <see cref="LoadTelegramAuthIcon"/>.
+    /// </summary>
+    public static Image? LoadDiscordAuthIcon()
+    {
+        if (_discordAuthIconLoaded)
+            return _discordAuthIcon;
+
+        _discordAuthIconLoaded = true;
+        _discordAuthIcon = LoadAuthIcon("ds.png", "Discord auth icon load");
+        return _discordAuthIcon;
+    }
+
+    private static Image? LoadAuthIcon(string resourceSuffix, string logContext)
+    {
+        try
+        {
+            using Stream? stream = OpenEmbeddedResource(resourceSuffix);
+            if (stream == null)
+                return null;
+
+            using var memory = new MemoryStream();
+            stream.CopyTo(memory);
+            return LoadImage(memory.ToArray());
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(logContext, ex);
+            return null;
+        }
+    }
+
     private static Image? LoadImage(byte[] bytes)
     {
         try

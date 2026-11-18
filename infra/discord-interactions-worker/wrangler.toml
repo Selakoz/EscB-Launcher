@@ -1,0 +1,15 @@
+name = "escapebook-discord"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "escapebook-db"
+database_id = "add53d51-046d-41b2-95bb-272610cb2814"
+
+# Secrets (set via Cloudflare Dashboard: Workers -> escapebook-discord -> Settings -> Variables and Secrets):
+# - DS_PUBLIC_KEY   : Discord application public key (verify interaction signatures)
+# - DS_APP_ID       : Discord application ID (used by registerCommands in src/commands.ts)
+# - DS_BOT_TOKEN    : Discord bot token (used by registerCommands in src/commands.ts)
+# - ADMIN_ROLE_ID   : Discord role ID whose members may run /add, /link, /ban, /unban

@@ -1,0 +1,21 @@
+name = "escapebook-auth"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "escapebook-db"
+database_id = "add53d51-046d-41b2-95bb-272610cb2814"
+
+[vars]
+# Non-secret Telegram bot username WITHOUT @ (e.g. "escapebook_bot").
+# Fill it here (redeploy applies it) or in the Dashboard: Workers ->
+# escapebook-auth -> Settings -> Variables and Secrets. Empty -> the client
+# hides the "open bot" deep link and shows the admin contact instead.
+TG_BOT_USERNAME = "escapebook_auth_bot"
+
+# Secrets (set via Cloudflare Dashboard: Workers -> escapebook-auth -> Settings -> Variables and Secrets):
+# - ADMIN_KEY     : shared secret for /admin/* endpoints (ban, unban, link, info)
+# - TG_BOT_TOKEN  : Telegram Bot API token (Otp is sent directly to the player's Telegram DM)
+# - DS_BOT_TOKEN  : Discord bot token for /auth/request-otp-discord (OTP is sent via DM)

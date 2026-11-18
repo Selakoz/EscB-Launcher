@@ -22,3 +22,19 @@ launcher.log
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Infra (Cloudflare Workers / Node)
+infra/**/node_modules/
+infra/**/.wrangler/
+infra/**/.dev.vars
+
+# Test build artifacts (create-test-build.ps1)
+test-build/
+test-build.zip
+/EscBClient.zip
+
+# Local scratch files / secrets (never commit tokens!)
+.wrangler/
+__pycache__/
+*.pyc
+register.js

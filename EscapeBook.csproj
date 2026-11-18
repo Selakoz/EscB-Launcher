@@ -30,6 +30,8 @@
   <ItemGroup>
     <EmbeddedResource Include="icon.ico" />
     <EmbeddedResource Include="banner.png" />
+    <EmbeddedResource Include="Assets\tg.png" />
+    <EmbeddedResource Include="Assets\ds.png" />
   </ItemGroup>
 
   <!-- The bootstrapper is a separate project inside this folder; keep it out of the launcher build. -->

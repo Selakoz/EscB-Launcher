@@ -49,6 +49,12 @@ internal sealed class RoundedComboBox : UserControl
     /// </summary>
     public Func<object?, Color>? ItemBackColorSelector { get; set; }
 
+    /// <summary>
+    /// Optional right-aligned text for dropdown rows (e.g. the build status in
+    /// parentheses). When null, the row is rendered as single text.
+    /// </summary>
+    public Func<object?, string?>? ItemRightTextSelector { get; set; }
+
     public event EventHandler? SelectedIndexChanged;
 
     public IReadOnlyList<object> Items => _items;
@@ -265,13 +271,21 @@ internal sealed class RoundedComboBox : UserControl
         for (int i = 0; i < _items.Count; i++)
         {
             int index = i;
+            string? rightText = ItemRightTextSelector?.Invoke(_items[i]);
+
             var item = new ToolStripMenuItem(Format(_items[i]))
             {
                 ForeColor = Theme.Text,
                 BackColor = ItemBackColorSelector?.Invoke(_items[i]) ?? Fill,
-                AutoSize = true,
+                // Fixed row size so both zones span the full dropdown width
+                // (AutoSize rows would shrink to the left text and clip the right zone).
+                AutoSize = false,
+                Size = new Size(Math.Max(140, Width) - 4, ItemHeight),
                 Padding = new Padding(10, 6, 10, 6),
-                Tag = index
+                // Two-zone rows carry both texts; single-text rows keep the index.
+                Tag = string.IsNullOrWhiteSpace(rightText)
+                    ? (object)index
+                    : new RowText(Format(_items[i]), rightText)
             };
 
             item.Click += (_, _) =>
@@ -317,6 +331,9 @@ internal sealed class RoundedComboBox : UserControl
         base.Dispose(disposing);
     }
 
+    /// <summary>Pre-rendered two-zone text of a dropdown row.</summary>
+    private sealed record RowText(string Left, string Right);
+
     /// <summary>Dark renderer for the dropdown, avoiding any white OS chrome.</summary>
     private sealed class DarkMenuRenderer : ToolStripProfessionalRenderer
     {
@@ -354,11 +371,77 @@ internal sealed class RoundedComboBox : UserControl
 
         protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
         {
+            if (e.Item.Tag is RowText row)
+            {
+                DrawTwoZoneRow(e, row);
+                return;
+            }
+
             e.TextColor = e.Item.Selected || e.Item.Pressed
                 ? Color.FromArgb(250, 250, 255)
                 : Theme.Text;
 
             base.OnRenderItemText(e);
+        }
+
+        /// <summary>
+        /// Two-zone row: build name + version on the left (starting 4px from the left
+        /// edge), build status in parentheses on the right (ending 4px from the right
+        /// edge). Both blocks use NoPrefix | SingleLine | VerticalCenter.
+        /// </summary>
+        private static void DrawTwoZoneRow(ToolStripItemTextRenderEventArgs e, RowText row)
+        {
+            ToolStripItem item = e.Item;
+            Graphics graphics = e.Graphics;
+
+            bool highlighted = item.Selected || item.Pressed;
+            Color textColor = highlighted ? Color.FromArgb(250, 250, 255) : Theme.Text;
+
+            const TextFormatFlags flags =
+                TextFormatFlags.NoPrefix |
+                TextFormatFlags.SingleLine |
+                TextFormatFlags.VerticalCenter |
+                TextFormatFlags.NoPadding;
+
+            Font font = item.Font ?? Theme.Font(10f);
+
+            Rectangle bounds = new(Point.Empty, item.Size);
+            const int horizontalInset = 4;
+            int leftEdge = bounds.Left + horizontalInset;
+            int rightEdge = bounds.Right - horizontalInset;
+
+            // Measure the right block and reserve its width so the blocks never overlap.
+            Size rightSize = TextRenderer.MeasureText(row.Right, font, Size.Empty, flags);
+
+            var leftRect = new Rectangle(
+                leftEdge,
+                bounds.Top,
+                Math.Max(1, rightEdge - rightSize.Width - leftEdge),
+                bounds.Height);
+
+            var rightRect = new Rectangle(
+                Math.Max(leftEdge, rightEdge - rightSize.Width),
+                bounds.Top,
+                Math.Min(rightSize.Width, Math.Max(1, rightEdge - leftEdge)),
+                bounds.Height);
+
+            // Left block: build name + Minecraft version.
+            TextRenderer.DrawText(
+                graphics,
+                row.Left,
+                font,
+                leftRect,
+                textColor,
+                flags | TextFormatFlags.EndEllipsis);
+
+            // Right block: status in parentheses, flush to the right edge.
+            TextRenderer.DrawText(
+                graphics,
+                row.Right,
+                font,
+                rightRect,
+                textColor,
+                flags);
         }
     }
 

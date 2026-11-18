@@ -1,25 +1,34 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.IO;
 using System.IO.Compression;
+using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 
 namespace EscapeBookBootstrapper;
 
 /// <summary>
-/// Lightweight two-step launcher:
-///   1. Asks the GitHub Releases API for the latest release of the launcher.
-///   2. Downloads <c>EscBClient.zip</c> when the remote tag differs from the locally
-///      stored tag, deploys it to %APPDATA%\.escapebook\launcher and starts
-///      <c>EscBClient.exe</c>.
-/// Uses only built-in .NET libraries so the published size stays well under 8 MB.
+/// Лёгкий двухшаговый загрузчик (только встроенные API .NET Framework 4.8):
+///   1. Запрашивает у GitHub Releases API последний релиз лаунчера.
+///   2. Скачивает <c>EscBClient.zip</c>, если удалённый тег отличается от
+///      локального маркера, разворачивает его в %APPDATA%\.escapebook\launcher
+///      и запускает <c>EscBClient.exe</c>.
+/// Итоговый EXE самодостаточен (&lt;1 МБ) и работает на чистой Windows 10/11.
 /// </summary>
 internal static class Bootstrapper
 {
-    // TODO: replace the placeholders with the repository that publishes the releases.
-    private const string GitHubOwner = "Selakoz";
-    private const string GitHubRepo = "EscB-Launcher";
+    // ЗАМЕНИТЕ YOUR_ACCOUNT и YOUR_REPO на репозиторий, в котором публикуются
+    // релизы (ассеты EscapeBookBootstrapper.exe и EscBClient.zip).
+    private const string GitHubOwner = "YOUR_ACCOUNT";
+    private const string GitHubRepo = "YOUR_REPO";
 
     private const string ReleaseAssetName = "EscBClient.zip";
     private const string MainExecutableName = "EscBClient.exe";
@@ -44,6 +53,10 @@ internal static class Bootstrapper
 
     public static async Task<int> RunAsync(string[] args)
     {
+        // GitHub требует TLS 1.2+; на .NET Framework включаем его явно.
+        ServicePointManager.SecurityProtocol =
+            ServicePointManager.SecurityProtocol | SecurityProtocolType.Tls12;
+
         Directory.CreateDirectory(LauncherDirectory);
         CleanupLeftoverBackups();
 
@@ -56,12 +69,13 @@ internal static class Bootstrapper
         try
         {
             ReleaseInfo? release = await FetchLatestReleaseAsync();
+            string? assetUrl = release?.AssetUrl;
 
             if (release is null)
             {
                 Log("Release information unavailable; will try the installed client.");
             }
-            else if (string.IsNullOrWhiteSpace(release.AssetUrl))
+            else if (assetUrl == null || assetUrl.Trim().Length == 0)
             {
                 Log($"Asset '{ReleaseAssetName}' not found in release '{release.TagName}'.");
             }
@@ -72,7 +86,7 @@ internal static class Bootstrapper
                 if (IsRemoteNewer(release.TagName, localTag))
                 {
                     Log($"Update required: local='{localTag}', remote='{release.TagName}'.");
-                    await DownloadAndApplyAsync(release.AssetUrl, release.TagName);
+                    await DownloadAndApplyAsync(assetUrl, release.TagName);
                     updated = true;
                 }
                 else
@@ -104,7 +118,7 @@ internal static class Bootstrapper
         using var client = CreateHttpClient(TimeSpan.FromSeconds(30));
         using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseApiUrl);
 
-        // GitHub requires a User-Agent header for API requests.
+        // GitHub требует заголовок User-Agent для запросов к API.
         request.Headers.UserAgent.ParseAdd("EscB-Bootstrapper/1.0");
         request.Headers.Accept.ParseAdd("application/vnd.github+json");
 
@@ -122,32 +136,42 @@ internal static class Bootstrapper
             return null;
         }
 
-        await using var stream = await response.Content.ReadAsStreamAsync();
-        using var document = await JsonDocument.ParseAsync(stream);
-        JsonElement root = document.RootElement;
+        string json = await response.Content.ReadAsStringAsync();
 
-        string tagName = root.TryGetProperty("tag_name", out JsonElement tagElement)
-            ? tagElement.GetString() ?? string.Empty
+        // Разбор минимально необходимого подмножества ответа встроенным
+        // JavaScriptSerializer (без NuGet и без рефлексии System.Text.Json).
+        var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+        object? parsed = serializer.DeserializeObject(json);
+
+        if (parsed is not Dictionary<string, object> root)
+        {
+            Log("GitHub API returned an unexpected payload.");
+            return null;
+        }
+
+        string tagName = root.TryGetValue("tag_name", out object? tagValue)
+            ? Convert.ToString(tagValue) ?? string.Empty
             : string.Empty;
 
         string? assetUrl = null;
 
-        if (root.TryGetProperty("assets", out JsonElement assets) &&
-            assets.ValueKind == JsonValueKind.Array)
+        if (root.TryGetValue("assets", out object? assetsValue) && assetsValue is ArrayList assets)
         {
-            foreach (JsonElement asset in assets.EnumerateArray())
+            foreach (object? entry in assets)
             {
-                string name = asset.TryGetProperty("name", out JsonElement nameElement)
-                    ? nameElement.GetString() ?? string.Empty
+                if (entry is not Dictionary<string, object> asset)
+                    continue;
+
+                string name = asset.TryGetValue("name", out object? nameValue)
+                    ? Convert.ToString(nameValue) ?? string.Empty
                     : string.Empty;
 
                 if (!string.Equals(name, ReleaseAssetName, StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                assetUrl = asset.TryGetProperty("browser_download_url", out JsonElement urlElement)
-                    ? urlElement.GetString()
+                assetUrl = asset.TryGetValue("browser_download_url", out object? urlValue)
+                    ? Convert.ToString(urlValue)
                     : null;
-
                 break;
             }
         }
@@ -181,7 +205,26 @@ internal static class Bootstrapper
 
             Console.WriteLine("Распаковка обновления...");
             Directory.CreateDirectory(stagingDirectory);
-            ZipFile.ExtractToDirectory(tempZip, stagingDirectory, overwriteFiles: true);
+
+            // В .NET Framework 4.8 нет перегрузки ExtractToDirectory с overwrite —
+            // распаковываем вручную с перезаписью существующих файлов.
+            using (var archive = ZipFile.OpenRead(tempZip))
+            {
+                foreach (ZipArchiveEntry entry in archive.Entries)
+                {
+                    // Записи-каталоги (пустое имя) пропускаем: папки создаются ниже.
+                    if (string.IsNullOrEmpty(entry.Name))
+                        continue;
+
+                    string destinationPath = Path.Combine(stagingDirectory, entry.FullName);
+                    string? destinationDirectory = Path.GetDirectoryName(destinationPath);
+
+                    if (!string.IsNullOrEmpty(destinationDirectory))
+                        Directory.CreateDirectory(destinationDirectory);
+
+                    entry.ExtractToFile(destinationPath, overwrite: true);
+                }
+            }
 
             DeployDirectory(stagingDirectory, LauncherDirectory);
 
@@ -207,8 +250,8 @@ internal static class Bootstrapper
 
         long? totalBytes = response.Content.Headers.ContentLength;
 
-        await using var input = await response.Content.ReadAsStreamAsync();
-        await using var output = new FileStream(
+        using var input = await response.Content.ReadAsStreamAsync();
+        using var output = new FileStream(
             destination,
             FileMode.Create,
             FileAccess.Write,
@@ -221,15 +264,16 @@ internal static class Bootstrapper
         int lastReportedPercent = -1;
         int read;
 
-        while ((read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length))) > 0)
+        while ((read = await input.ReadAsync(buffer, 0, buffer.Length)) > 0)
         {
-            await output.WriteAsync(buffer.AsMemory(0, read));
+            await output.WriteAsync(buffer, 0, read);
             totalRead += read;
 
-            if (totalBytes is not > 0)
+            if (!totalBytes.HasValue || totalBytes.Value <= 0)
                 continue;
 
-            int percent = (int)Math.Clamp(totalRead * 100 / totalBytes.Value, 0L, 100L);
+            long rawPercent = totalRead * 100 / totalBytes.Value;
+            int percent = (int)Math.Min(100L, Math.Max(0L, rawPercent));
 
             if (percent >= lastReportedPercent + 10 || percent == 100)
             {
@@ -251,7 +295,9 @@ internal static class Bootstrapper
                      "*",
                      SearchOption.AllDirectories))
         {
-            string relativePath = Path.GetRelativePath(payloadRoot, sourceFile);
+            string relativePath = sourceFile
+                .Substring(payloadRoot.Length)
+                .TrimStart('\\', '/');
             string targetFile = Path.Combine(targetDirectory, relativePath);
 
             string? targetSubDirectory = Path.GetDirectoryName(targetFile);
@@ -266,8 +312,9 @@ internal static class Bootstrapper
     }
 
     /// <summary>
-    /// Returns the folder that actually contains EscBClient.exe, so ZIPs created by
-    /// "send to compressed folder" (which wrap everything in one directory) also work.
+    /// Возвращает папку, в которой фактически лежит EscBClient.exe, чтобы ZIP-ы,
+    /// созданные через «Отправить → Сжатая ZIP-папка» (все файлы в одной
+    /// вложенной папке), тоже работали.
     /// </summary>
     private static string ResolvePayloadRoot(string stagingDirectory)
     {
@@ -286,9 +333,9 @@ internal static class Bootstrapper
     }
 
     /// <summary>
-    /// Copies a file into the launcher directory. A running EscBClient.exe (or a loaded
-    /// DLL) cannot be overwritten, so the old file is renamed aside first and removed
-    /// afterwards.
+    /// Копирует файл в папку лаунчера. Запущенный EscBClient.exe (или
+    /// загруженную DLL) нельзя перезаписать, поэтому старый файл сначала
+    /// переименовывается в сторону и удаляется afterwards.
     /// </summary>
     private static void CopyWithLockHandling(string sourceFile, string targetFile)
     {
@@ -389,7 +436,7 @@ internal static class Bootstrapper
             return remote.CompareTo(local) > 0;
         }
 
-        // Non-comparable tags (e.g. "season-2") are treated as an update.
+        // Несопоставимые теги (например, "season-2") считаем обновлением.
         return true;
     }
 
@@ -401,8 +448,8 @@ internal static class Bootstrapper
             return false;
 
         string cleaned = tag.Trim();
-        if (cleaned.StartsWith('v') || cleaned.StartsWith('V'))
-            cleaned = cleaned[1..];
+        if (cleaned.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+            cleaned = cleaned.Substring(1);
 
         return Version.TryParse(cleaned, out version);
     }
@@ -424,7 +471,7 @@ internal static class Bootstrapper
     // -------------------------------------------------------------------- infra
 
     private static HttpClient CreateHttpClient(TimeSpan timeout) =>
-        new() { Timeout = timeout };
+        new HttpClient { Timeout = timeout };
 
     public static void Log(string message)
     {
@@ -437,7 +484,7 @@ internal static class Bootstrapper
         }
         catch
         {
-            // Logging must never crash the bootstrapper.
+            // Логирование не должно ронять загрузчик.
         }
     }
 
@@ -450,7 +497,7 @@ internal static class Bootstrapper
         }
         catch
         {
-            // Best effort (the file may be in use).
+            // Best effort (файл может быть занят).
         }
     }
 
@@ -467,5 +514,16 @@ internal static class Bootstrapper
         }
     }
 
-    private sealed record ReleaseInfo(string TagName, string? AssetUrl);
+    private sealed class ReleaseInfo
+    {
+        public ReleaseInfo(string tagName, string? assetUrl)
+        {
+            TagName = tagName;
+            AssetUrl = assetUrl;
+        }
+
+        public string TagName { get; }
+
+        public string? AssetUrl { get; }
+    }
 }

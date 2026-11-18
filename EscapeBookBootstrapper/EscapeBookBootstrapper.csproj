@@ -2,8 +2,10 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- .NET Framework 4.8 предустановлен на всех Windows 10/11: итоговый EXE
+         самодостаточен (<1 МБ) и не требует установки .NET 8 пользователем. -->
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <RootNamespace>EscapeBookBootstrapper</RootNamespace>
     <AssemblyName>EscapeBookBootstrapper</AssemblyName>
@@ -12,8 +14,16 @@
     <Product>EscB Bootstrapper</Product>
     <Description>Лёгкий загрузчик и автообновление для EscB Client</Description>
     <ApplicationIcon>..\icon.ico</ApplicationIcon>
+    <!-- Не плодить .pdb рядом с релизным EXE. -->
+    <DebugType>none</DebugType>
   </PropertyGroup>
 
-  <!-- Intentionally no PackageReferences: only built-in .NET libraries. -->
+  <!-- Только встроенные сборки .NET Framework: никаких NuGet-пакетов. -->
+  <ItemGroup>
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
 
 </Project>

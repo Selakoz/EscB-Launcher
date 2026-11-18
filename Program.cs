@@ -29,6 +29,8 @@ internal static class Program
                 AppLog.Error("Unhandled exception", exception);
         };
 
+        // Authorization is non-intrusive: MainForm checks the saved session on
+        // load and switches its own UI between authorized/unauthorized states.
         Application.Run(new MainForm());
     }
 }

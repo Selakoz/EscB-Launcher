@@ -106,7 +106,18 @@ internal sealed class RoundedButton : Button
 
         var textColor = Enabled ? ForeColor : Theme.Muted;
 
-        if (ShowPlayIcon)
+        if (Image != null)
+        {
+            // Auth icons (e.g. Telegram): draw the image centered, ~20-24 px.
+            const int iconSide = 22;
+            var iconRect = new Rectangle((Width - iconSide) / 2, (Height - iconSide) / 2, iconSide, iconSide);
+            var previousMode = graphics.InterpolationMode;
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.DrawImage(Image, iconRect);
+            graphics.InterpolationMode = previousMode;
+        }
+        else if (ShowPlayIcon)
         {
             var measured = TextRenderer.MeasureText(
                 Text,

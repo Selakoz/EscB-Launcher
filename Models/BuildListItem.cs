@@ -3,26 +3,42 @@ using System.Drawing;
 namespace EscapeBook.Models;
 
 /// <summary>
-/// Dropdown entry for the build selector: display text, build id and local status.
+/// Dropdown entry for the build selector. The row is rendered in two zones:
+/// the build name with the Minecraft version on the left and the status in
+/// parentheses on the right.
 /// </summary>
 internal sealed class BuildListItem
 {
-    public string Text { get; init; } = string.Empty;
-
     public string BuildId { get; init; } = string.Empty;
-
-    public BuildStatus Status { get; init; }
 
     public BuildInfo Build { get; init; } = new();
 
-    /// <summary>Text suffix appended to the build name in the dropdown.</summary>
-    public static string StatusSuffix(BuildStatus status) => status switch
+    public BuildStatus Status { get; init; }
+
+    /// <summary>Левая зона строки: название сборки и версия Minecraft.</summary>
+    public string LeftText => $"{Build.Name} {Build.McVersion}";
+
+    /// <summary>Правая зона строки: статус в круглых скобках.</summary>
+    public string RightText => $"({StatusWord(Status)})";
+
+    /// <summary>
+    /// Базовое слово статуса — единый источник для всех отображений
+    /// (правая зона выпадающего списка и суффикс строки).
+    /// </summary>
+    public static string StatusWord(BuildStatus status) => status switch
     {
-        BuildStatus.UpToDate => " — Актуальная",
-        BuildStatus.UpdateAvailable => " — Требуется обновление",
-        BuildStatus.NotInstalled => " — Не установлено",
+        BuildStatus.UpToDate => "Актуальная",
+        BuildStatus.UpdateAvailable => "Требуется обновление",
+        BuildStatus.NotInstalled => "Не установлено",
         _ => string.Empty
     };
+
+    /// <summary>Суффикс статуса (« — Актуальная» и т.п.), собранный из StatusWord.</summary>
+    public static string StatusSuffix(BuildStatus status)
+    {
+        string word = StatusWord(status);
+        return string.IsNullOrEmpty(word) ? string.Empty : " — " + word;
+    }
 
     /// <summary>Background colour used for this entry in the dropdown popup.</summary>
     public static Color StatusBackColor(BuildStatus status) => status switch
@@ -32,5 +48,5 @@ internal sealed class BuildListItem
         _ => Color.FromArgb(30, 30, 46)                             // #1E1E2E default
     };
 
-    public override string ToString() => Text;
+    public override string ToString() => LeftText;
 }

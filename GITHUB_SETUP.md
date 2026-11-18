@@ -217,6 +217,11 @@ dotnet build EscapeBook.sln -c Release
 | `EscapeBookBootstrapper/EscapeBookBootstrapper.csproj` | лёгкий загрузчик и автообновление | `EscapeBookBootstrapper.exe` |
 | `EscapeBook.csproj` | основной лаунчер (WinForms) | `EscBClient.zip` |
 
+**Архитектура поставки:** bootstrapper — крошечный standalone EXE под
+.NET Framework 4.8 (~30 КБ, работает на чистой Windows 10/11 без установки
+.NET); скачиваемый `EscBClient.zip` содержит **полный .NET 8 Desktop Runtime**
+(self-contained), поэтому игра запускается на ПК без установленного .NET 8.
+
 ### 11.1. Подготовка
 
 1. Укажите реальный `CONFIG_URL` в `Services/ConfigService.cs`.
@@ -236,9 +241,12 @@ dotnet build EscapeBook.sln -c Release
 ### 11.2. Публикация основного лаунчера (EscBClient.zip)
 
 ```powershell
-dotnet publish EscapeBook.csproj -c Release -r win-x64 --self-contained false -o publish/client
+dotnet publish EscapeBook.csproj -c Release -r win-x64 --self-contained true -o publish/client
 Compress-Archive -Path publish/client/* -DestinationPath publish/EscBClient.zip -Force
 ```
+
+`--self-contained true` кладёт внутрь папки **полный .NET 8 Desktop Runtime**,
+поэтому архив весит ~60–80 МБ (это нормально) и работает на чистой Windows.
 
 Требования к архиву:
 
@@ -246,7 +254,7 @@ Compress-Archive -Path publish/client/* -DestinationPath publish/EscBClient.zip 
   наличие перед распаковкой);
 - `config.json` копируется в `publish/client` автоматически при публикации;
 - архив должен содержать все файлы из `publish/client` (dll, deps.json,
-  runtimeconfig.json, config.json).
+  runtimeconfig.json, config.json, файлы рантайма).
 
 > Не добавляйте в `EscBClient.zip` папку `user_settings.json` или инстансы —
 > они хранятся отдельно в `%APPDATA%\.escapebook`.
@@ -254,12 +262,13 @@ Compress-Archive -Path publish/client/* -DestinationPath publish/EscBClient.zip 
 ### 11.3. Публикация загрузчика (EscapeBookBootstrapper.exe)
 
 ```powershell
-dotnet publish EscapeBookBootstrapper/EscapeBookBootstrapper.csproj -c Release -r win-x64 --self-contained false -o publish/bootstrapper
+dotnet publish EscapeBookBootstrapper/EscapeBookBootstrapper.csproj -c Release -o publish/bootstrapper
 ```
 
-Готовый `publish/bootstrapper/EscapeBookBootstrapper.exe` занимает ~0.2 МБ
-(вместе со всеми файлами публикации — ~0.2 МБ, значительно меньше лимита 8 МБ).
-Публикация framework-dependent: игроку нужен .NET 8 Desktop Runtime.
+Загрузчик собирается под **.NET Framework 4.8** (предустановлен на всех
+Windows 10/11): готовый `publish/bootstrapper/EscapeBookBootstrapper.exe`
+занимает ~30 КБ, самодостаточен и **не требует установки .NET 8** на ПК игрока.
+RID (`-r`) не указывается: .NET Framework не использует RID-папки.
 
 ### 11.4. Оформление GitHub Release
 
@@ -284,6 +293,42 @@ dotnet publish EscapeBookBootstrapper/EscapeBookBootstrapper.csproj -c Release -
 
 Важно: чтобы выпустить обновление, достаточно создать новый релиз с новым тегом
 (`v1.0.1`, `v1.0.2`, …) и приложить к нему новый `EscBClient.zip`.
+
+## 12. Переменные auth-worker для OTP-доставки
+
+Для авторизации через Telegram воркеру `escapebook-auth` нужны две переменные:
+
+| Переменная | Тип | Назначение |
+| --- | --- | --- |
+| `TG_BOT_TOKEN` | Secret | Токен бота от @BotFather (отправка OTP в ЛС). |
+| `TG_BOT_USERNAME` | Обычная переменная | Username бота **без `@`** — из него лаунчер строит ссылку `https://t.me/<username>?start=1`. |
+
+Задаются в `infra/auth-worker/wrangler.toml` (секция `[vars]` для username) и через
+Dashboard → Workers → `escapebook-auth` → Settings → Variables and Secrets (для токена).
+
+> Внимание: `TG_BOT_USERNAME` объявлен в `[vars]`, поэтому каждый `wrangler deploy`
+> перезаписывает значение из Dashboard значением из `wrangler.toml` — вписывайте
+> реальный username прямо в `wrangler.toml` перед деплоем.
+
+Игрок обязан **нажать «Запустить» (/start) в боте**: иначе Telegram отвечает 403
+(«bot can't initiate conversation»), воркер возвращает `tg_not_started`, а лаунчер
+показывает инструкцию и кнопку «Открыть бота в Telegram» вместо ожидания кода.
+
+## 13. Discord-канал OTP (секрет `DS_BOT_TOKEN`)
+
+Второй канал авторизации: код приходит в **личные сообщения Discord** от бота EscapeBook
+(`POST /auth/request-otp-discord` в `escapebook-auth`).
+
+1. Discord Developer Portal → ваше приложение → **Bot** → скопируйте токен.
+2. Cloudflare Dashboard → Workers → `escapebook-auth` → Settings → Variables and Secrets
+   → добавьте секрет **`DS_BOT_TOKEN`**.
+3. Игрок должен заранее привязать Discord (`/link ds_id:...` в Discord) и разрешить
+   личные сообщения от участников сервера (Настройки → Конфиденциальность сервера →
+   «Личные сообщения от участников сервера»).
+
+Если ЛС запрещены, Discord отвечает 403 («Cannot send messages to this user»), воркер
+возвращает `ds_dm_blocked`, а лаунчер показывает инструкцию включить ЛС. Токен хранится
+только в Cloudflare; в клиенте его нет.
 
 
 

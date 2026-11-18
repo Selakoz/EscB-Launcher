@@ -40,6 +40,16 @@ internal sealed class MainForm : BaseDarkForm
     private bool _busy;
     private bool _suppressBuildEvents;
 
+    // ---- Authorization UI state ----
+    private readonly ToolTip _toolTip = new();
+    private RoundedButton _authTgButton = null!;
+    private RoundedButton _authDsButton = null!;
+    private RoundedButton _profileButton = null!;
+    private ContextMenuStrip? _profileMenu;
+    private ToolStripMenuItem? _linkTelegramItem;
+    private ToolStripMenuItem? _linkDiscordItem;
+    private bool _authorized;
+
     public MainForm() : base(new Size(460, 510), allowMinimize: true)
     {
         TitleText = "EscB Client";
@@ -58,6 +68,10 @@ internal sealed class MainForm : BaseDarkForm
 
         BuildLayout();
         WireAutoSave();
+
+        // Start in the unauthorized state; OnShown upgrades it when a valid
+        // session for this machine (HWID match) is found.
+        ApplyAuthState(false);
     }
 
     private void BuildLayout()
@@ -176,10 +190,12 @@ internal sealed class MainForm : BaseDarkForm
         {
             Height = 36,
             Font = new Font("Segoe UI", 10f),
-            Formatter = item => (item as BuildListItem)?.Text ?? item?.ToString() ?? string.Empty,
+            Formatter = item => (item as BuildListItem)?.LeftText ?? item?.ToString() ?? string.Empty,
             ItemBackColorSelector = item => item is BuildListItem buildItem
                 ? BuildListItem.StatusBackColor(buildItem.Status)
-                : Color.FromArgb(30, 30, 46)
+                : Color.FromArgb(30, 30, 46),
+            // Правая зона строки: статус сборки в круглых скобках.
+            ItemRightTextSelector = item => (item as BuildListItem)?.RightText
         };
         _buildsBox.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
         AddInner(_buildsBox, 0);
@@ -222,7 +238,83 @@ internal sealed class MainForm : BaseDarkForm
         };
         _settingsButton.Click += (_, _) => OpenSettings();
         buttonRow.Controls.Add(_settingsButton, 0, 0);
-        buttonRow.Controls.Add(new Label { Height = 1 }, 1, 0);
+
+        // ---- Auth area (right side of the settings row) ----
+        var authArea = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            BackColor = Theme.Background,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+
+        // Profile button (authorized state): nickname + logout context menu.
+        _profileButton = new RoundedButton
+        {
+            Text = "Профиль",
+            Width = 150,
+            Height = 36,
+            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
+            CornerRadius = 10,
+            NormalBackColor = Theme.Surface,
+            HoverBackColor = Theme.SurfaceHover,
+            PressedBackColor = Color.FromArgb(19, 22, 29),
+            BorderColor = Theme.Accent,
+            BorderSize = 1,
+            ForeColor = Theme.Text,
+            Margin = new Padding(8, 0, 0, 0),
+            Visible = false
+        };
+        _profileButton.Click += (_, _) => ShowProfileMenu();
+        _toolTip.SetToolTip(_profileButton, "Ваш аккаунт");
+        authArea.Controls.Add(_profileButton);
+
+        // Embedded Assets/ds.png icon (cached); null -> 🎮 glyph fallback below.
+        Image? discordIcon = Branding.LoadDiscordAuthIcon();
+
+        _authDsButton = new RoundedButton
+        {
+            Text = discordIcon == null ? "🎮" : string.Empty,
+            Image = discordIcon,
+            Width = 46,
+            Height = 36,
+            Font = new Font("Segoe UI Emoji", 12f, FontStyle.Regular),
+            CornerRadius = 10,
+            NormalBackColor = Color.FromArgb(88, 101, 242), // Discord blurple
+            HoverBackColor = Color.FromArgb(103, 115, 250),
+            PressedBackColor = Color.FromArgb(70, 82, 220),
+            ForeColor = Theme.Text,
+            Margin = new Padding(8, 0, 0, 0)
+        };
+        _authDsButton.Click += AuthDiscord_Click;
+        _toolTip.SetToolTip(_authDsButton, "Авторизоваться через Discord");
+        authArea.Controls.Add(_authDsButton);
+
+        // Embedded Assets/tg.png icon (cached); null -> ✈️ glyph fallback below.
+        Image? telegramIcon = Branding.LoadTelegramAuthIcon();
+
+        _authTgButton = new RoundedButton
+        {
+            // Icon when available, otherwise the ✈️ glyph (never crashes).
+            Text = telegramIcon == null ? "✈️" : string.Empty,
+            Image = telegramIcon,
+            Width = 46,
+            Height = 36,
+            Font = new Font("Segoe UI Emoji", 12f, FontStyle.Regular),
+            CornerRadius = 10,
+            NormalBackColor = Theme.AccentSoft,
+            HoverBackColor = Color.FromArgb(120, 162, 255),
+            PressedBackColor = Color.FromArgb(70, 118, 230),
+            ForeColor = Theme.Text,
+            Margin = new Padding(8, 0, 0, 0)
+        };
+        _authTgButton.Click += AuthTelegram_Click;
+        _toolTip.SetToolTip(_authTgButton, "Авторизоваться через Telegram");
+        authArea.Controls.Add(_authTgButton);
+
+        buttonRow.Controls.Add(authArea, 1, 0);
         // Outer row includes the 8px bottom margin, otherwise the inner row shrinks
         // to 30px and clips the 36px button.
         Add(buttonRow, new RowStyle(SizeType.Absolute, 46f));
@@ -325,6 +417,10 @@ internal sealed class MainForm : BaseDarkForm
         // Re-centre after the window has its final size/font scaling.
         CenterBanner();
 
+        // Non-blocking session check: upgrades the UI to "authorized" when a
+        // valid session for this machine exists.
+        _ = InitializeAuthStateAsync();
+
         try
         {
             _config = await _launcherService.LoadConfigAsync();
@@ -337,6 +433,225 @@ internal sealed class MainForm : BaseDarkForm
             if (!IsDisposed)
                 SetStatus("Не удалось загрузить список сборок", Theme.Danger);
         }
+    }
+
+    // -------------------------------------------------------- authorization
+
+    /// <summary>
+    /// Loads the saved session and validates it against the current HWID
+    /// (computed off the UI thread). Missing/foreign session keeps the
+    /// unauthorized state.
+    /// </summary>
+    private async Task InitializeAuthStateAsync()
+    {
+        try
+        {
+            SessionData? session = SessionManager.LoadSession();
+            if (session == null)
+                return;
+
+            string hwid = await Task.Run(AuthService.GetHWID);
+
+            if (IsDisposed)
+                return;
+
+            if (string.Equals(session.HWID, hwid, StringComparison.Ordinal))
+                ApplyAuthState(true, session.McNickname);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Auth state init", ex);
+        }
+    }
+
+    /// <summary>
+    /// Switches the whole UI between authorized and unauthorized states:
+    /// auth buttons vs profile button, play/build controls locked or not.
+    /// </summary>
+    private void ApplyAuthState(bool authorized, string? nickname = null)
+    {
+        _authorized = authorized;
+
+        _authTgButton.Visible = !authorized;
+        _authDsButton.Visible = !authorized;
+        _profileButton.Visible = authorized;
+
+        if (authorized && !string.IsNullOrWhiteSpace(nickname))
+            _profileButton.Text = nickname!;
+
+        if (!_busy)
+        {
+            _buildsBox.Enabled = authorized;
+            _playButton.Enabled = authorized;
+        }
+
+        if (authorized)
+        {
+            _toolTip.SetToolTip(_playButton, string.Empty);
+            _toolTip.SetToolTip(_buildsBox, string.Empty);
+            SetStatus("Готов к запуску", Theme.Muted);
+        }
+        else
+        {
+            const string hint = "Сначала авторизуйтесь через Telegram или Discord";
+            _toolTip.SetToolTip(_playButton, hint);
+            _toolTip.SetToolTip(_buildsBox, hint);
+            SetStatus("Не авторизовано — войдите через Telegram или Discord", Theme.Warning);
+        }
+    }
+
+    private void AuthTelegram_Click(object? sender, EventArgs e) => OpenAuthDialog(AuthChannel.Telegram);
+
+    private void AuthDiscord_Click(object? sender, EventArgs e) => OpenAuthDialog(AuthChannel.Discord);
+
+    /// <summary>
+    /// Opens the OTP dialog in the requested channel mode. Both modes share the
+    /// nickname/OTP fields and the server-side HWID auto-trust on confirm.
+    /// </summary>
+    private void OpenAuthDialog(AuthChannel channel)
+    {
+        if (_busy || _gameProcess != null)
+            return;
+
+        try
+        {
+            using var dialog = new InlineAuthDialog(_nickBox.Text.Trim(), channel);
+            if (dialog.ShowDialog(this) != DialogResult.OK || IsDisposed)
+                return;
+
+            // Sync the authorized nickname with the launcher settings (autosave).
+            _nickBox.Text = dialog.McNickname;
+            _settings.Nickname = dialog.McNickname;
+            _session.SaveSoon();
+
+            ApplyAuthState(true, dialog.McNickname);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Auth dialog", ex);
+            SetStatus("Не удалось открыть окно авторизации", Theme.Danger);
+        }
+    }
+
+    private void ShowProfileMenu()
+    {
+        BuildProfileMenu();
+        _profileMenu?.Show(_profileButton, new Point(0, _profileButton.Height));
+
+        // Query linked accounts asynchronously; the menu is already visible and
+        // link items update in place (logout always works).
+        _ = RefreshLinkMenuItemsAsync();
+    }
+
+    /// <summary>
+    /// Builds the dark profile menu: link items (hidden until the async lookup
+    /// confirms they are missing), separator, then logout.
+    /// </summary>
+    private void BuildProfileMenu()
+    {
+        if (_profileMenu != null)
+            return;
+
+        _profileMenu = new ContextMenuStrip
+        {
+            ShowImageMargin = false,
+            BackColor = Theme.Surface,
+            ForeColor = Theme.Text,
+            Font = Theme.Font(9.5f)
+        };
+
+        _linkTelegramItem = CreateMenuItem("Привязать Telegram");
+        _linkDiscordItem = CreateMenuItem("Привязать Discord");
+        _linkTelegramItem.Visible = false;
+        _linkDiscordItem.Visible = false;
+        _linkTelegramItem.Click += (_, _) => ShowLinkInstructions(LinkAccountKind.Telegram);
+        _linkDiscordItem.Click += (_, _) => ShowLinkInstructions(LinkAccountKind.Discord);
+
+        var logoutItem = CreateMenuItem("Выйти из аккаунта");
+        logoutItem.Click += (_, _) => PerformLogout();
+
+        _profileMenu.Items.Add(_linkTelegramItem);
+        _profileMenu.Items.Add(_linkDiscordItem);
+        _profileMenu.Items.Add(new ToolStripSeparator());
+        _profileMenu.Items.Add(logoutItem);
+    }
+
+    private static ToolStripMenuItem CreateMenuItem(string text)
+    {
+        var item = new ToolStripMenuItem(text)
+        {
+            BackColor = Theme.Surface,
+            ForeColor = Theme.Text
+        };
+        item.MouseEnter += (_, _) => item.BackColor = Theme.SurfaceHover;
+        item.MouseLeave += (_, _) => item.BackColor = Theme.Surface;
+        return item;
+    }
+
+    /// <summary>
+    /// Asks /auth/links which external accounts are linked and shows only the
+    /// missing ones. Any failure hides both link items; logout stays usable.
+    /// </summary>
+    private async Task RefreshLinkMenuItemsAsync()
+    {
+        string nickname = (_settings.Nickname ?? string.Empty).Trim();
+        if (nickname.Length == 0)
+            nickname = _nickBox.Text.Trim();
+
+        try
+        {
+            string hwid = await Task.Run(AuthService.GetHWID);
+            LinksResult links = await AuthService.GetLinksAsync(nickname, hwid);
+
+            if (IsDisposed)
+                return;
+
+            bool ok = links.Success;
+            if (_linkTelegramItem != null)
+                _linkTelegramItem.Visible = ok && !links.TgLinked;
+            if (_linkDiscordItem != null)
+                _linkDiscordItem.Visible = ok && !links.DsLinked;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Profile links lookup", ex);
+            if (_linkTelegramItem != null)
+                _linkTelegramItem.Visible = false;
+            if (_linkDiscordItem != null)
+                _linkDiscordItem.Visible = false;
+        }
+    }
+
+    private void ShowLinkInstructions(LinkAccountKind kind)
+    {
+        string title;
+        string text;
+
+        if (kind == LinkAccountKind.Telegram)
+        {
+            title = "Привязка Telegram";
+            text =
+                $"Откройте бота в Telegram, нажмите «Запустить», затем напишите администратору {AuthLinks.AdminContact} " +
+                "в Telegram или Discord: ваш ник в Minecraft и ваш Telegram ID. " +
+                "Узнать ID можно у @userinfobot.";
+        }
+        else
+        {
+            title = "Привязка Discord";
+            text =
+                $"Напишите администратору {AuthLinks.AdminContact} в Discord: ваш ник в Minecraft и ваш Discord ID " +
+                "(Настройки → Расширенные → Режим разработчика → ПКМ по себе → Копировать ID).";
+        }
+
+        using var dialog = new LinkInstructionsDialog(title, text);
+        dialog.ShowDialog(this);
+    }
+
+    private void PerformLogout()
+    {
+        SessionManager.ClearSession();
+        ApplyAuthState(false);
+        SetStatus("Вы вышли из аккаунта", Theme.Muted);
     }
 
     private void PopulateBuilds()
@@ -357,9 +672,9 @@ internal sealed class MainForm : BaseDarkForm
                     ? value
                     : BuildStatus.NotInstalled;
 
+                // The status is rendered in the right zone of the row, not in the text.
                 return new BuildListItem
                 {
-                    Text = build.Name + BuildListItem.StatusSuffix(status),
                     BuildId = build.Id,
                     Status = status,
                     Build = build
@@ -432,9 +747,10 @@ internal sealed class MainForm : BaseDarkForm
     private void SetControlsEnabled(bool enabled)
     {
         _nickBox.Enabled = enabled;
-        _buildsBox.Enabled = enabled;
+        // Game actions stay locked while the user is not authorized.
+        _buildsBox.Enabled = enabled && _authorized;
         _settingsButton.Enabled = enabled;
-        _playButton.Enabled = enabled;
+        _playButton.Enabled = enabled && _authorized;
     }
 
     private async void PlayButton_Click(object? sender, EventArgs e) =>
@@ -442,6 +758,12 @@ internal sealed class MainForm : BaseDarkForm
 
     private async Task HandlePrimaryActionAsync()
     {
+        if (!_authorized)
+        {
+            SetStatus("Сначала авторизуйтесь через Telegram или Discord", Theme.Warning);
+            return;
+        }
+
         if (_selectedStatus == BuildStatus.UpToDate)
             await StartGameAsync();
         else
@@ -730,6 +1052,14 @@ internal sealed class MainForm : BaseDarkForm
         {
             using var form = new SettingsForm(_config, _session, _isFirstLaunch);
             form.ShowDialog(this);
+
+            // The user logged out from the settings window: revert the main
+            // window to the unauthorized state (game actions locked).
+            if (form.LogoutRequested && !IsDisposed)
+            {
+                ApplyAuthState(false);
+                SetStatus("Вы вышли из аккаунта", Theme.Muted);
+            }
         }
         catch (Exception ex)
         {
@@ -808,6 +1138,8 @@ internal sealed class MainForm : BaseDarkForm
         {
             _session.Dispose();
             _lifetimeCts.Dispose();
+            _toolTip.Dispose();
+            _profileMenu?.Dispose();
         }
 
         base.Dispose(disposing);
