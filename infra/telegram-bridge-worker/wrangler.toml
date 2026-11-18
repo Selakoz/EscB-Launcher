@@ -1,0 +1,27 @@
+name = "escapebook-tg-bridge"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "escapebook-db"
+database_id = "add53d51-046d-41b2-95bb-272610cb2814"
+
+[vars]
+# Не секрет: ID группы/канала Telegram, куда пересылаются ВСЕ сообщения из Discord
+# (и привязанные, и непривязанные игроки).
+TG_CHAT_ID = "-1004439376746"
+
+# Secrets (set via Cloudflare Dashboard: Workers -> escapebook-tg-bridge -> Settings -> Variables and Secrets):
+# - TG_BOT_TOKEN       : Bot API token (отправка в Telegram, getFile для медиа)
+# - TG_WEBHOOK_SECRET  : секрет вебхука Telegram
+# - DS_BOT_TOKEN       : Discord bot token (REST API: отправка сообщений/файлов в канал)
+# - DISCORD_CHANNEL_ID : (переменная, не секрет) ID канала Discord для TG -> DS
+# - BRIDGE_SECRET      : (опционально) общий секрет /bridge/ds-to-tg
+
+# Secrets (set via Cloudflare Dashboard: Workers -> escapebook-tg-bridge -> Settings -> Variables and Secrets):
+# - TG_BOT_TOKEN     : Telegram Bot API token (used by /bridge/ds-to-tg sendMessage)
+# - TG_WEBHOOK_SECRET: secret token for X-Telegram-Bot-Api-Secret-Token (set via BotFather / setWebhook secret_token)
+# - DISCORD_WEBHOOK_URL: Discord webhook used to forward Telegram messages
+# - BRIDGE_SECRET    : (optional) shared secret for /bridge/ds-to-tg, sent by the HF listener as x-bridge-secret
