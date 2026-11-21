@@ -449,6 +449,10 @@ internal sealed class SettingsForm : BaseDarkForm
 
         var mods = GetOptionalMods();
 
+        // Resolve conflicting radio-group choices before rendering so the UI and the
+        // files on disk always show a single active mod per group.
+        ApplyGroupExclusivity(mods);
+
         // Dock.Top places the last added control at the very top, so add in reverse
         // to keep the visual order identical to the config order.
         foreach (var mod in Enumerable.Reverse(mods))
@@ -457,7 +461,8 @@ internal sealed class SettingsForm : BaseDarkForm
             {
                 ModName = mod.Name,
                 Description = mod.Description,
-                Tag = mod
+                Tag = mod,
+                IsRadio = IsRadioGroup(mod, mods)
             };
 
             card.IsOn = ResolveModState(mod);
@@ -478,6 +483,72 @@ internal sealed class SettingsForm : BaseDarkForm
             empty.AutoSize = false;
             empty.Location = new Point(0, 0);
         }
+    }
+
+    /// <summary>
+    /// A mod is rendered as a radio button only when its group actually contains at
+    /// least two mods; a lone grouped mod behaves like a normal toggle.
+    /// </summary>
+    private static bool IsRadioGroup(OptionalModInfo mod, IReadOnlyList<OptionalModInfo> mods)
+    {
+        if (string.IsNullOrWhiteSpace(mod.Group))
+            return false;
+
+        return mods.Count(other =>
+                   string.Equals(other.Group, mod.Group, StringComparison.OrdinalIgnoreCase)) > 1;
+    }
+
+    /// <summary>
+    /// Keeps exactly one enabled mod per group. The first enabled member in config
+    /// order wins; all other members are disabled both in settings and on disk.
+    /// When no member is enabled yet, the group stays empty until the player chooses.
+    /// </summary>
+    private void ApplyGroupExclusivity(IReadOnlyList<OptionalModInfo> mods)
+    {
+        var groups = mods
+            .Where(mod => !string.IsNullOrWhiteSpace(mod.Group))
+            .GroupBy(mod => mod.Group, StringComparer.OrdinalIgnoreCase);
+
+        bool changed = false;
+
+        foreach (var group in groups)
+        {
+            var members = group.ToList();
+            if (members.Count < 2)
+                continue;
+
+            var states = members
+                .Select(mod => (Mod: mod, Enabled: ResolveModState(mod)))
+                .ToList();
+
+            OptionalModInfo? selected = states
+                .Where(state => state.Enabled)
+                .Select(state => state.Mod)
+                .FirstOrDefault();
+
+            foreach (var state in states)
+            {
+                bool desired = selected != null && ReferenceEquals(state.Mod, selected);
+                if (state.Enabled == desired)
+                    continue;
+
+                _settings.OptionalModStates[state.Mod.Name] = desired;
+
+                try
+                {
+                    OptionalModsService.SetEnabled(state.Mod, _buildId, desired);
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Error("Optional mod group apply", ex);
+                }
+
+                changed = true;
+            }
+        }
+
+        if (changed)
+            _session.Save();
     }
 
     /// <summary>
@@ -553,10 +624,49 @@ internal sealed class SettingsForm : BaseDarkForm
     {
         bool enabled = card.IsOn;
 
+        var mods = GetOptionalMods();
+        bool isGrouped = IsRadioGroup(mod, mods);
+
+        // Radio semantics: clicking the already selected member must not turn it off.
+        if (isGrouped && !enabled)
+        {
+            card.IsOn = true;
+            return;
+        }
+
+        if (isGrouped)
+        {
+            // Disable every other member of the same group first.
+            foreach (var other in mods)
+            {
+                if (ReferenceEquals(other, mod) ||
+                    !string.Equals(other.Group, mod.Group, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                _settings.OptionalModStates[other.Name] = false;
+                ApplyModToDisk(other, false);
+
+                var otherCard = _modCards.FirstOrDefault(cardItem =>
+                    ReferenceEquals(cardItem.Tag, other));
+                if (otherCard != null)
+                    otherCard.IsOn = false;
+            }
+        }
+
         // Persist the preference (used when the build is not downloaded yet).
         _settings.OptionalModStates[mod.Name] = enabled;
 
         // Apply immediately to the active instance mods folder.
+        ApplyModToDisk(mod, enabled);
+        card.IsOn = enabled;
+
+        _session.Save();
+    }
+
+    private void ApplyModToDisk(OptionalModInfo mod, bool enabled)
+    {
         try
         {
             OptionalModsService.SetEnabled(mod, _buildId, enabled);
@@ -565,21 +675,24 @@ internal sealed class SettingsForm : BaseDarkForm
         {
             AppLog.Error("Optional mods apply", ex);
         }
-
-        _session.Save();
     }
 
     private void ResetModsToDefaults()
     {
         try
         {
-            foreach (var mod in GetOptionalMods())
+            var mods = GetOptionalMods();
+
+            foreach (var mod in mods)
             {
                 bool desired = mod.EnabledByDefault;
 
                 _settings.OptionalModStates[mod.Name] = desired;
                 OptionalModsService.SetEnabled(mod, _buildId, desired);
             }
+
+            // If several mods in one group default to enabled, the first one wins.
+            ApplyGroupExclusivity(mods);
 
             RefreshModCards();
             _session.Save();

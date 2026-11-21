@@ -9,7 +9,13 @@
     <RootNamespace>EscapeBook</RootNamespace>
     <AssemblyName>EscBClient</AssemblyName>
     <ApplicationIcon>icon.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- DPI awareness is declared both in app.manifest (applied before Main runs)
+         and via ApplicationHighDpiMode (mirrored by ApplicationConfiguration.Initialize).
+         WFAC010 flags this intentional redundancy; both paths are kept so the
+         launcher is DPI-aware even if the generated bootstrap changes. -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
     <Version>2.1.0</Version>
     <Authors>EscB</Authors>
     <Product>EscB Client</Product>
@@ -39,6 +45,9 @@
     <Compile Remove="EscapeBookBootstrapper\**\*.cs" />
     <None Remove="EscapeBookBootstrapper\**" />
     <EmbeddedResource Remove="EscapeBookBootstrapper\**" />
+    <Compile Remove="EscBUpdater\**\*.cs" />
+    <None Remove="EscBUpdater\**" />
+    <EmbeddedResource Remove="EscBUpdater\**" />
   </ItemGroup>
 
 </Project>

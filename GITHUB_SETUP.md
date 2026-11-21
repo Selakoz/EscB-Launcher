@@ -40,6 +40,18 @@ https://github.com/ВАШ_АККАУНТ/escapebook-launcher
       "client_zip_url": "https://github.com/ВАШ_АККАУНТ/escapebook-launcher/releases/download/v1.0.0/season2.zip"
     }
   ],
+  "secret_builds": [
+    {
+      "code": "SECRET2024",
+      "build": {
+        "id": "secret_season",
+        "name": "Секретный сезон",
+        "mc_version": "1.21.1",
+        "version": "1.0.0",
+        "client_zip_url": "https://github.com/ВАШ_АККАУНТ/escapebook-launcher/releases/download/v1.0.0/secret.zip"
+      }
+    }
+  ],
   "optional_mods": [
     {
       "name": "Шейдеры (Iris + Sodium)",
@@ -58,6 +70,20 @@ https://github.com/ВАШ_АККАУНТ/escapebook-launcher
       "description": "Дополнительная графика, могут снижать FPS.",
       "file_prefixes": ["extra-visual-", "fancy-"],
       "enabled_by_default": false
+    },
+    {
+      "name": "JourneyMap",
+      "description": "Карта мира и миникарта.",
+      "file_prefixes": ["journeymap-"],
+      "enabled_by_default": true,
+      "group": "map_mods"
+    },
+    {
+      "name": "Xaero's Minimap",
+      "description": "Альтернативная миникарта и карта мира.",
+      "file_prefixes": ["XaerosMinimap_", "XaerosWorldMap_"],
+      "enabled_by_default": false,
+      "group": "map_mods"
     }
   ]
 }
@@ -74,8 +100,73 @@ https://github.com/ВАШ_АККАУНТ/escapebook-launcher
 - при первом создании инстанса сборки (автоматически, по скачивании архива);
 - при нажатии кнопки **«Сбросить по умолчанию»** во вкладке «Оптимизация и визуал» настроек.
 
-Игрок всё ещё может вручную включить/выключить любой мод чекбоксом; состояние сохраняется
-между обновлениями сборки.
+Игрок всё ещё может вручную включить/выключить обычный мод переключателем; состояние
+сохраняется между обновлениями сборки. Для модов с `group` действует выбор одного
+варианта из группы (см. раздел 3.1).
+
+## 3.1. Группы модов (`group`)
+
+Необязательное поле `group` в `optional_mods` делает моды взаимоисключающими: игрок
+может выбрать только один мод из группы. В интерфейсе такие моды показываются
+радиокнопками вместо переключателей.
+
+```json
+{
+  "name": "JourneyMap",
+  "description": "Карта мира и миникарта.",
+  "file_prefixes": ["journeymap-"],
+  "enabled_by_default": true,
+  "group": "map_mods"
+},
+{
+  "name": "Xaero's Minimap",
+  "description": "Альтернативная миникарта и карта мира.",
+  "file_prefixes": ["XaerosMinimap_", "XaerosWorldMap_"],
+  "enabled_by_default": false,
+  "group": "map_mods"
+}
+```
+
+- Моды с одинаковым `group` (без учёта регистра) образуют одну группу.
+- При выборе одного мода остальные моды группы автоматически выключаются: их файлы
+  получают суффикс `.disabled`.
+- Моды без `group` остаются обычными независимыми переключателями.
+- В каждой группе задавайте `enabled_by_default: true` только у одного мода.
+- Текущий выбор сохраняется в `optionalModStates` в `user_settings.json` и
+  учитывается при следующем обновлении сборки.
+- Группа из одного мода отображается как обычный переключатель.
+
+## 3.2. Секретные сборки (`secret_builds`)
+
+Массив `secret_builds` добавляет сборки, которые **не видны** в выпадающем списке по
+умолчанию. Игрок активирует их, набрав код на главном окне лаунчера — отдельного поля
+ввода для этого нет.
+
+```json
+"secret_builds": [
+  {
+    "code": "SECRET2024",
+    "build": {
+      "id": "secret_season",
+      "name": "Секретный сезон",
+      "mc_version": "1.21.1",
+      "version": "1.0.0",
+      "client_zip_url": "https://github.com/ВАШ_АККАУНТ/escapebook-launcher/releases/download/v1.0.0/secret.zip"
+    }
+  }
+]
+```
+
+- `code` должен состоять только из латинских букв и цифр; регистр не важен.
+- `build` использует ту же структуру, что и элементы массива `builds`, включая
+  обязательные `id` и `mc_version`.
+- После ввода правильного кода сборка добавляется в список и сразу выбирается.
+- Выбор сохраняется в `user_settings.json` (`selectedBuildId`), но сама сборка
+  остаётся скрытой до повторного ввода кода в новой сессии лаунчера.
+- Коды в массиве не должны повторяться; при повторе используется первая запись.
+- Код распознаётся при вводе с клавиатуры в любом месте главного окна, включая
+  поле никнейма. Символы кода при этом также попадут в никнейм — при необходимости
+  очистите поле и введите ник заново.
 
 ## 4. Получите прямую ссылку на config.json (Raw)
 
@@ -215,12 +306,14 @@ dotnet build EscapeBook.sln -c Release
 | Проект | Что это | Файл для игроков |
 | --- | --- | --- |
 | `EscapeBookBootstrapper/EscapeBookBootstrapper.csproj` | лёгкий загрузчик и автообновление | `EscapeBookBootstrapper.exe` |
+| `EscBUpdater/EscBUpdater.csproj` | проверка обновлений по ярлыку | вшит внутрь `EscapeBookBootstrapper.exe` |
 | `EscapeBook.csproj` | основной лаунчер (WinForms) | `EscBClient.zip` |
 
-**Архитектура поставки:** bootstrapper — крошечный standalone EXE под
-.NET Framework 4.8 (~30 КБ, работает на чистой Windows 10/11 без установки
-.NET); скачиваемый `EscBClient.zip` содержит **полный .NET 8 Desktop Runtime**
-(self-contained), поэтому игра запускается на ПК без установленного .NET 8.
+**Архитектура поставки:** bootstrapper — самостоятельный standalone EXE под
+.NET Framework 4.8 (~350 КБ вместе с вшитым обновлятором, работает на чистой
+Windows 10/11 без установки .NET); скачиваемый `EscBClient.zip` содержит
+**полный .NET 8 Desktop Runtime** (self-contained), поэтому игра запускается на
+ПК без установленного .NET 8.
 
 ### 11.1. Подготовка
 
@@ -267,8 +360,13 @@ dotnet publish EscapeBookBootstrapper/EscapeBookBootstrapper.csproj -c Release -
 
 Загрузчик собирается под **.NET Framework 4.8** (предустановлен на всех
 Windows 10/11): готовый `publish/bootstrapper/EscapeBookBootstrapper.exe`
-занимает ~30 КБ, самодостаточен и **не требует установки .NET 8** на ПК игрока.
+занимает ~350 КБ (вместе с вшитым `EscBUpdater.exe`), самодостаточен и
+**не требует установки .NET 8** на ПК игрока.
 RID (`-r`) не указывается: .NET Framework не использует RID-папки.
+
+При сборке загрузчика автоматически собирается проект `EscBUpdater`, и его
+`EscBUpdater.exe` вшивается в загрузчик как ресурс: отдельный файл в релиз
+прикладывать не нужно.
 
 ### 11.4. Оформление GitHub Release
 
@@ -286,10 +384,15 @@ RID (`-r`) не указывается: .NET Framework не использует
    `https://api.github.com/repos/<OWNER>/<REPO>/releases/latest`.
 3. Находит ассет `EscBClient.zip` и сравнивает `tag_name` с
    `%APPDATA%\.escapebook\launcher\.bootstrapper_version`.
-4. Если тег новее (или файла нет) — скачивает архив, распаковывает в
-   `%APPDATA%\.escapebook\launcher\`, сохраняет тег и запускает `EscBClient.exe`.
-5. Если GitHub недоступен — запускает уже установленный клиент; ошибки пишутся в
-   `%APPDATA%\.escapebook\launcher\bootstrapper.log`.
+4. Если тег новее (или файла нет) — скачивает архив, очищает папку лаунчера
+   от файлов прошлой версии (сохраняя `user_settings.json`,
+   `.launcher_config.json` и `instances/`), распаковывает архив, сохраняет тег
+   и запускает `EscBClient.exe`.
+5. После первого успешного запуска создаётся ярлык «EscB Client». Ярлык
+   запускает `EscBUpdater.exe` (вшит в загрузчик): он проверяет релиз, при
+   необходимости скачивает и устанавливает обновление, затем запускает клиент.
+6. Если GitHub недоступен — запускает уже установленный клиент; ошибки пишутся в
+   `%APPDATA%\.escapebook\launcher\bootstrapper.log` (обновлятор — в `updater.log`).
 
 Важно: чтобы выпустить обновление, достаточно создать новый релиз с новым тегом
 (`v1.0.1`, `v1.0.2`, …) и приложить к нему новый `EscBClient.zip`.

@@ -1,12 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <!-- WinExe: загрузчик не показывает консольное окно. -->
+    <OutputType>WinExe</OutputType>
     <!-- .NET Framework 4.8 предустановлен на всех Windows 10/11: итоговый EXE
-         самодостаточен (<1 МБ) и не требует установки .NET 8 пользователем. -->
+         самодостаточен и не требует установки .NET 8 пользователем.
+         Нативный single-file (PublishSingleFile) для net48 не поддерживается,
+         поэтому зависимости вшиваются Costura.Fody прямо при build. -->
     <TargetFramework>net48</TargetFramework>
-    <LangVersion>latest</LangVersion>
-    <Nullable>enable</Nullable>
+    <!-- Строго C# 7.3: никаких C# 8/9+ возможностей (using var, is not,
+         file-scoped namespace, records, top-level statements и т.п.). -->
+    <LangVersion>7.3</LangVersion>
+    <Nullable>disable</Nullable>
     <RootNamespace>EscapeBookBootstrapper</RootNamespace>
     <AssemblyName>EscapeBookBootstrapper</AssemblyName>
     <Version>1.0.0</Version>
@@ -16,14 +21,60 @@
     <ApplicationIcon>..\icon.ico</ApplicationIcon>
     <!-- Не плодить .pdb рядом с релизным EXE. -->
     <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <!-- Не создавать EscapeBookBootstrapper.exe.config: на Windows 10/11
+         нужный CLR v4 и так загружается, а в папке должен остаться один EXE. -->
+    <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
   </PropertyGroup>
 
-  <!-- Только встроенные сборки .NET Framework: никаких NuGet-пакетов. -->
+  <!-- Встроенные сборки .NET Framework (не требуют доставки файлов). -->
   <ItemGroup>
     <Reference Include="System.Net.Http" />
     <Reference Include="System.IO.Compression" />
     <Reference Include="System.IO.Compression.FileSystem" />
-    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
   </ItemGroup>
+
+  <!-- Fody + Costura вшивают управляемые зависимости (Newtonsoft.Json) внутрь
+       EscapeBookBootstrapper.exe как ресурсы: на выходе один файл. -->
+  <ItemGroup>
+    <PackageReference Include="Fody" Version="6.8.0">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Costura.Fody" Version="5.7.0">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <!-- Обновлятор собирается до загрузчика и вшивается в него как ресурс:
+       на выходе по-прежнему один EscapeBookBootstrapper.exe. -->
+  <ItemGroup>
+    <ProjectReference Include="..\EscBUpdater\EscBUpdater.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
+    </ProjectReference>
+  </ItemGroup>
+
+  <Target Name="EmbedUpdaterExecutable"
+          BeforeTargets="PrepareResourceNames"
+          DependsOnTargets="ResolveProjectReferences">
+    <PropertyGroup>
+      <UpdaterExecutablePath>$(MSBuildThisFileDirectory)..\EscBUpdater\bin\$(Configuration)\net48\EscBUpdater.exe</UpdaterExecutablePath>
+    </PropertyGroup>
+
+    <Error Condition="!Exists('$(UpdaterExecutablePath)')"
+           Text="Не найден $(UpdaterExecutablePath). Сначала соберите проект EscBUpdater." />
+
+    <ItemGroup>
+      <EmbeddedResource Include="$(UpdaterExecutablePath)">
+        <LogicalName>EscBUpdater.exe</LogicalName>
+        <ManifestResourceName>EscBUpdater.exe</ManifestResourceName>
+        <WithCulture>false</WithCulture>
+        <Type>Non-Resx</Type>
+      </EmbeddedResource>
+    </ItemGroup>
+  </Target>
 
 </Project>

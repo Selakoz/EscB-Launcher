@@ -4,6 +4,7 @@
   "discord_webhook_url": "",
   "banner_url": "https://raw.githubusercontent.com/Selakoz/EscB-Launcher/main/assets/banner.png",
   "banner_hash": "32be609e11af853c0b3d5bb7c60a1f97ad601f4dadefb1db4492b4afc9fa43a2",
+  "website_url": "https://escapebook.site/",
   "builds": [
     {
       "id": "test",
@@ -25,6 +26,25 @@
       "mc_version": "1.20.1",
       "version": "1.0.0",
       "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v1.0.0/season1.zip"
+    },
+    {
+      "id": "secret2024",
+      "name": "SECRET2024",
+      "mc_version": "1.20.1",
+      "version": "1.0.0",
+      "client_zip_url": "https://github.com/your-account/your-repo/releases/download/v1.0.0/secret2024.zip"
+    }
+  ],
+  "secret_builds": [
+    {
+      "code": "SECRET2024",
+      "build": {
+        "id": "secret_season",
+        "name": "Секретный сезон",
+        "mc_version": "1.21.1",
+        "version": "1.0.0",
+        "client_zip_url": "https://github.com/your-account/your-repo/releases/download/v1.0.0/secret.zip"
+      }
     }
   ],
   "optional_mods": [
@@ -45,6 +65,12 @@
       "description": "Дополнительная графика и эффекты, могут снижать FPS на слабых ПК.",
       "file_prefixes": ["extra-visual-"],
       "enabled_by_default": false
+    },
+    {
+      "name": "Миникарта",
+      "description": "Выберите Xaero's Minimap или JourneyMap.",
+      "file_prefixes": ["xaeros", "journeymap"],
+      "enabled_by_default": true
     }
   ]
 }

@@ -103,6 +103,20 @@ internal sealed class ModToggleCard : Panel
         set => _descriptionLabel.Text = value;
     }
 
+    /// <summary>
+    /// When true the toggle is painted as a radio button. Group exclusivity itself is
+    /// enforced by the settings form; the card just provides the correct visual.
+    /// </summary>
+    public bool IsRadio
+    {
+        get => _toggle.IsRadio;
+        set
+        {
+            _toggle.IsRadio = value;
+            Invalidate();
+        }
+    }
+
     /// <summary>When false the toggle is greyed out and the card is not clickable.</summary>
     public bool Interactive { get; set; } = true;
 
@@ -165,6 +179,7 @@ internal sealed class SwitchToggle : Control
 {
     private bool _checked;
     private bool _hovered;
+    private bool _isRadio;
 
     public SwitchToggle()
     {
@@ -194,6 +209,20 @@ internal sealed class SwitchToggle : Control
             _checked = value;
             Invalidate();
             CheckedChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    /// <summary>Paints a radio circle instead of the sliding switch.</summary>
+    public bool IsRadio
+    {
+        get => _isRadio;
+        set
+        {
+            if (_isRadio == value)
+                return;
+
+            _isRadio = value;
+            Invalidate();
         }
     }
 
@@ -247,6 +276,12 @@ internal sealed class SwitchToggle : Control
         var rect = ClientRectangle;
         bool on = Checked;
 
+        if (_isRadio)
+        {
+            DrawRadio(graphics, rect, on);
+            return;
+        }
+
         Color trackColor = on ? Theme.Accent : Theme.ToggleOff;
         if (!on && _hovered)
             trackColor = Theme.SurfaceHover;
@@ -264,5 +299,37 @@ internal sealed class SwitchToggle : Control
                    diameter / 2f))
         using (var thumbBrush = new SolidBrush(on ? Color.FromArgb(250, 250, 255) : Theme.ToggleOffThumb))
             graphics.FillPath(thumbBrush, thumbPath);
+    }
+
+    private void DrawRadio(Graphics graphics, Rectangle rect, bool on)
+    {
+        float size = Math.Max(10f, Math.Min(rect.Width, rect.Height) - 4f);
+        var circle = new RectangleF(
+            rect.Left + (rect.Width - size) / 2f,
+            rect.Top + (rect.Height - size) / 2f,
+            size,
+            size);
+
+        Color ringColor = on
+            ? Theme.Accent
+            : _hovered
+                ? Theme.AccentHover
+                : Theme.Border;
+
+        using (var ring = new Pen(ringColor, 2f))
+            graphics.DrawEllipse(ring, circle);
+
+        if (!on)
+            return;
+
+        float dotSize = size - 10f;
+        var dot = new RectangleF(
+            circle.Left + (size - dotSize) / 2f,
+            circle.Top + (size - dotSize) / 2f,
+            dotSize,
+            dotSize);
+
+        using var dotBrush = new SolidBrush(Theme.Accent);
+        graphics.FillEllipse(dotBrush, dot);
     }
 }

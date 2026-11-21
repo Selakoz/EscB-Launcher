@@ -7,7 +7,8 @@
     2) dotnet publish EscapeBook.csproj -c Release -r win-x64 --self-contained true
        (в архив EscBClient.zip попадает ПОЛНЫЙ .NET 8 Desktop Runtime)
     3) Compress-Archive publish/client -> publish/EscBClient.zip
-    4) dotnet publish EscapeBookBootstrapper (net48, standalone, ~30 КБ)
+    4) dotnet publish EscapeBookBootstrapper (net48, standalone, ~350 КБ
+       вместе с вшитым обновлятором EscBUpdater.exe)
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File publish.ps1

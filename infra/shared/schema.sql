@@ -27,14 +27,12 @@ CREATE TABLE IF NOT EXISTS rate_limits (
     window_end  INTEGER NOT NULL
 );
 
--- Мост Discord -> Telegram: сопоставление сообщений для reply-тредов.
 CREATE TABLE IF NOT EXISTS message_map_ds_to_tg (
     discord_message_id  TEXT PRIMARY KEY,
     telegram_message_id TEXT NOT NULL,
     created_at          INTEGER NOT NULL
 );
 
--- Мост Telegram -> Discord (обратное сопоставление).
 CREATE TABLE IF NOT EXISTS message_map_tg_to_ds (
     telegram_message_id TEXT PRIMARY KEY,
     discord_message_id  TEXT NOT NULL,

@@ -2,10 +2,14 @@ namespace EscapeBook.Services;
 
 internal static class LauncherPaths
 {
-    /// <summary>Launcher data root: %APPDATA%\.escapebook.</summary>
-    public static string Root { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        ".escapebook");
+    /// <summary>
+    /// Launcher data root. Uses the path selected during installation
+    /// (%LOCALAPPDATA%\EscB\install_path.txt) or %APPDATA%\.escapebook by default.
+    /// </summary>
+    public static string Root { get; } = InstallPathConfig.GetBasePath();
+
+    /// <summary>Reason why the configured root was rejected, if any.</summary>
+    public static string? ResolutionWarning => InstallPathConfig.LastWarning;
 
     public static string SettingsFile => Path.Combine(Root, "user_settings.json");
     public static string AuthSessionFile => Path.Combine(Root, "auth_session.json");

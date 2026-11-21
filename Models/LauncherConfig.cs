@@ -22,11 +22,22 @@ internal sealed class LauncherConfig
     [JsonPropertyName("banner_hash")]
     public string BannerHash { get; set; } = string.Empty;
 
+    [JsonPropertyName("website_url")]
+    public string WebsiteUrl { get; set; } = "https://escapebook.site/";
+
     [JsonPropertyName("builds")]
     public List<BuildInfo> Builds { get; set; } = new();
 
     [JsonPropertyName("optional_mods")]
     public List<OptionalModInfo> OptionalMods { get; set; } = new();
+
+    /// <summary>
+    /// Hidden builds activated by typing a code on the main window. They are not
+    /// part of <see cref="Builds"/> and therefore do not appear in the dropdown
+    /// until the matching code is entered.
+    /// </summary>
+    [JsonPropertyName("secret_builds")]
+    public List<SecretBuildInfo> SecretBuilds { get; set; } = new();
 
     public void NormalizeAndValidate()
     {
@@ -75,6 +86,44 @@ internal sealed class LauncherConfig
 
         Builds = normalizedBuilds;
 
+        var normalizedSecretBuilds = new List<SecretBuildInfo>();
+        var secretCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (SecretBuilds != null)
+        {
+            foreach (var secret in SecretBuilds)
+            {
+                if (secret == null || secret.Build == null)
+                    continue;
+
+                secret.Code = secret.Code?.Trim() ?? string.Empty;
+
+                if (secret.Code.Length == 0 || !secretCodes.Add(secret.Code))
+                    continue;
+
+                BuildInfo build = secret.Build;
+                build.Id = build.Id?.Trim() ?? string.Empty;
+                build.Name = string.IsNullOrWhiteSpace(build.Name) ? build.Id : build.Name.Trim();
+                build.McVersion = build.McVersion?.Trim() ?? string.Empty;
+                build.Version = string.IsNullOrWhiteSpace(build.Version) ? "0" : build.Version.Trim();
+                build.ClientZipUrl = build.ClientZipUrl?.Trim() ?? string.Empty;
+
+                // Invalid secret builds are skipped silently so a typo in one entry
+                // never prevents the launcher from starting.
+                if (string.IsNullOrWhiteSpace(build.Id) ||
+                    build.Id.Length > 64 ||
+                    !build.Id.All(c => char.IsLetterOrDigit(c) || c is '_' or '-') ||
+                    string.IsNullOrWhiteSpace(build.McVersion))
+                {
+                    continue;
+                }
+
+                normalizedSecretBuilds.Add(secret);
+            }
+        }
+
+        SecretBuilds = normalizedSecretBuilds;
+
         var normalizedMods = new List<OptionalModInfo>();
 
         if (OptionalMods != null)
@@ -86,6 +135,7 @@ internal sealed class LauncherConfig
 
                 mod.Name = mod.Name?.Trim() ?? string.Empty;
                 mod.Description = mod.Description?.Trim() ?? string.Empty;
+                mod.Group = mod.Group?.Trim() ?? string.Empty;
                 mod.FilePrefixes = (mod.FilePrefixes ?? new List<string>())
                     .Where(prefix => !string.IsNullOrWhiteSpace(prefix))
                     .Select(prefix => prefix.Trim())

@@ -12,6 +12,7 @@ internal sealed class MainForm : BaseDarkForm
 {
     private const int HorizontalMargin = 32;
     private const int BottomMargin = 24;
+    private const string DefaultWebsiteUrl = "https://escapebook.site/";
 
     private static readonly Regex NicknameRegex =
         new("^[A-Za-z0-9_]{3,16}$", RegexOptions.Compiled);
@@ -28,6 +29,7 @@ internal sealed class MainForm : BaseDarkForm
     private ModernProgressBar _progressBar = null!;
     private RoundedButton _playButton = null!;
     private RoundedButton _settingsButton = null!;
+    private RoundedButton _websiteButton = null!;
     private PictureBox _bannerBox = null!;
 
     private readonly UserSettings _settings;
@@ -39,6 +41,12 @@ internal sealed class MainForm : BaseDarkForm
     private Process? _gameProcess;
     private bool _busy;
     private bool _suppressBuildEvents;
+
+    // ---- Official website button debounce ----
+    private DateTime _lastWebsiteClick = DateTime.MinValue;
+
+    // ---- Secret build code buffer (typed on the main window) ----
+    private string _codeBuffer = string.Empty;
 
     // ---- Authorization UI state ----
     private readonly ToolTip _toolTip = new();
@@ -59,7 +67,7 @@ internal sealed class MainForm : BaseDarkForm
         this.FormBorderStyle = FormBorderStyle.FixedSingle;
         this.MaximizeBox = false;
         this.MinimizeBox = true;
-        this.AutoScaleMode = AutoScaleMode.Font;
+        this.AutoScaleMode = AutoScaleMode.Dpi;
         CollapseTitleBar();
 
         _isFirstLaunch = !File.Exists(LauncherPaths.SettingsFile);
@@ -69,9 +77,22 @@ internal sealed class MainForm : BaseDarkForm
         BuildLayout();
         WireAutoSave();
 
+        // Secret codes are typed directly on the main window (no dedicated input).
+        KeyPreview = true;
+        KeyPress += MainForm_KeyPress;
+
         // Start in the unauthorized state; OnShown upgrades it when a valid
         // session for this machine (HWID match) is found.
         ApplyAuthState(false);
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+
+        // WinForms rescales the form frame and the TableLayoutPanel-based
+        // layout automatically. Point-sized fonts follow the monitor DPI, so
+        // no manual font/position adjustments are required here.
     }
 
     private void BuildLayout()
@@ -213,6 +234,7 @@ internal sealed class MainForm : BaseDarkForm
             ColumnStyles =
             {
                 new ColumnStyle(SizeType.AutoSize),
+                new ColumnStyle(SizeType.AutoSize),
                 new ColumnStyle(SizeType.Percent, 100f)
             },
             RowStyles = { new RowStyle(SizeType.Absolute, 38f) },
@@ -238,6 +260,39 @@ internal sealed class MainForm : BaseDarkForm
         };
         _settingsButton.Click += (_, _) => OpenSettings();
         buttonRow.Controls.Add(_settingsButton, 0, 0);
+
+        // ---- Official website button (opens the system default browser) ----
+        _websiteButton = new RoundedButton
+        {
+            Text = "🌐 Сайт",
+            Width = 100,
+            Height = 36,
+            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
+            CornerRadius = 10,
+            BackColor = Color.FromArgb(11, 33, 31),        // #0B211F dark emerald
+            NormalBackColor = Color.FromArgb(11, 33, 31),
+            HoverBackColor = Color.FromArgb(11, 33, 31),
+            PressedBackColor = Color.FromArgb(8, 24, 22),
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = Color.FromArgb(76, 200, 214),      // #4CC8D6 ice
+            Cursor = Cursors.Hand,
+            Anchor = AnchorStyles.Left | AnchorStyles.Top,
+            Margin = new Padding(8, 0, 0, 0)
+        };
+        _websiteButton.FlatAppearance.BorderSize = 0;
+        _websiteButton.MouseEnter += (_, _) =>
+        {
+            _websiteButton.ForeColor = Color.FromArgb(240, 180, 41); // #F0B429 gold
+            _websiteButton.Invalidate();
+        };
+        _websiteButton.MouseLeave += (_, _) =>
+        {
+            _websiteButton.ForeColor = Color.FromArgb(76, 200, 214);
+            _websiteButton.Invalidate();
+        };
+        _websiteButton.Click += WebsiteButton_Click;
+        _toolTip.SetToolTip(_websiteButton, DefaultWebsiteUrl);
+        buttonRow.Controls.Add(_websiteButton, 1, 0);
 
         // ---- Auth area (right side of the settings row) ----
         var authArea = new FlowLayoutPanel
@@ -314,7 +369,7 @@ internal sealed class MainForm : BaseDarkForm
         _toolTip.SetToolTip(_authTgButton, "Авторизоваться через Telegram");
         authArea.Controls.Add(_authTgButton);
 
-        buttonRow.Controls.Add(authArea, 1, 0);
+        buttonRow.Controls.Add(authArea, 2, 0);
         // Outer row includes the 8px bottom margin, otherwise the inner row shrinks
         // to 30px and clips the 36px button.
         Add(buttonRow, new RowStyle(SizeType.Absolute, 46f));
@@ -705,6 +760,101 @@ internal sealed class MainForm : BaseDarkForm
         UpdatePlayButtonForSelectedBuild();
     }
 
+    // ---------------------------------------------------------- secret builds
+
+    /// <summary>
+    /// Listens for a secret code typed anywhere on the main window. The buffer keeps
+    /// the last N characters (N = longest configured code) so codes work without a
+    /// dedicated input field and even if extra characters were typed first.
+    /// </summary>
+    private void MainForm_KeyPress(object? sender, KeyPressEventArgs e)
+    {
+        if (_config == null || _config.SecretBuilds.Count == 0)
+            return;
+
+        // Enter, Backspace and Escape reset the attempt.
+        if (e.KeyChar is '\r' or '\n' or '\b' or '\u001b')
+        {
+            _codeBuffer = string.Empty;
+            return;
+        }
+
+        if (!char.IsLetterOrDigit(e.KeyChar))
+            return;
+
+        _codeBuffer += char.ToUpperInvariant(e.KeyChar);
+
+        int maxLength = _config.SecretBuilds.Max(secret => secret.Code.Length);
+        if (maxLength <= 0)
+        {
+            _codeBuffer = string.Empty;
+            return;
+        }
+
+        if (_codeBuffer.Length > maxLength)
+            _codeBuffer = _codeBuffer[^maxLength..];
+
+        foreach (var secret in _config.SecretBuilds)
+        {
+            if (!_codeBuffer.Equals(secret.Code, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            _codeBuffer = string.Empty;
+            ActivateSecretBuild(secret.Build);
+            break;
+        }
+    }
+
+    /// <summary>
+    /// Adds the secret build to the dropdown (if it is not there yet), selects it and
+    /// persists the choice through the normal autosave path.
+    /// </summary>
+    private void ActivateSecretBuild(BuildInfo secretBuild)
+    {
+        if (_config == null || _busy)
+            return;
+
+        if (!_config.Builds.Any(build =>
+                string.Equals(build.Id, secretBuild.Id, StringComparison.OrdinalIgnoreCase)))
+        {
+            _config.Builds.Add(secretBuild);
+        }
+
+        _statuses = _statusService.RefreshStatuses(_config.Builds);
+
+        var items = _config.Builds
+            .Select(build =>
+            {
+                BuildStatus status = _statuses.TryGetValue(build.Id, out BuildStatus value)
+                    ? value
+                    : BuildStatus.NotInstalled;
+
+                return new BuildListItem
+                {
+                    BuildId = build.Id,
+                    Status = status,
+                    Build = build
+                };
+            })
+            .ToList();
+
+        _suppressBuildEvents = true;
+        _buildsBox.SetItems(items, secretBuild.Id, item => (item as BuildListItem)?.BuildId);
+
+        if (_buildsBox.SelectedItem is BuildListItem selected)
+        {
+            _selectedBuild = selected.Build;
+            _selectedStatus = selected.Status;
+            _settings.SelectedBuildId = selected.BuildId;
+            _session.Save();
+        }
+
+        _suppressBuildEvents = false;
+
+        UpdatePlayButtonForSelectedBuild();
+        SetStatus($"Секретная сборка «{secretBuild.Name}» активирована", Theme.Success);
+    }
+
     /// <summary>
     /// Applies the selected build status to the main action button:
     /// ИГРАТЬ (accent) / ОБНОВИТЬ (amber) / УСТАНОВИТЬ (green).
@@ -751,6 +901,40 @@ internal sealed class MainForm : BaseDarkForm
         _buildsBox.Enabled = enabled && _authorized;
         _settingsButton.Enabled = enabled;
         _playButton.Enabled = enabled && _authorized;
+    }
+
+    /// <summary>
+    /// Opens the official website in the system default browser (never in an
+    /// embedded WebView). Repeated clicks are ignored for one second.
+    /// </summary>
+    private void WebsiteButton_Click(object? sender, EventArgs e)
+    {
+        if ((DateTime.Now - _lastWebsiteClick).TotalMilliseconds < 1000)
+            return;
+
+        _lastWebsiteClick = DateTime.Now;
+
+        string url = _config?.WebsiteUrl ?? DefaultWebsiteUrl;
+        if (string.IsNullOrWhiteSpace(url))
+            url = DefaultWebsiteUrl;
+
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = url,
+                UseShellExecute = true
+            };
+            System.Diagnostics.Process.Start(psi);
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            MessageBox.Show(
+                "Не удалось открыть ссылку. Убедитесь, что в системе назначен браузер по умолчанию.",
+                "Ошибка",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
     }
 
     private async void PlayButton_Click(object? sender, EventArgs e) =>

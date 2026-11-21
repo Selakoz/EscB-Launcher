@@ -41,7 +41,12 @@ internal class BaseDarkForm : Form
         BackColor = Theme.Background;
         ForeColor = Theme.Text;
         Font = Theme.Font(9f);
-        AutoScaleMode = AutoScaleMode.Font;
+        // Dpi scaling with an explicit 96-DPI design baseline. Without the
+        // baseline WinForms captures the current monitor DPI as the design
+        // size, so a window created on a 125%/150% monitor would not grow
+        // while point-sized fonts still would (tiny window, huge clipped text).
+        AutoScaleMode = AutoScaleMode.Dpi;
+        AutoScaleDimensions = new SizeF(96f, 96f);
         ClientSize = clientSize;
         DoubleBuffered = true;
         KeyPreview = true;
@@ -179,8 +184,11 @@ internal class BaseDarkForm : Form
 
     private void RepositionTitleButtons()
     {
-        _closeButton.Location = new Point(Math.Max(0, TitleBarPanel.Width - 44), 0);
-        _minimizeButton.Location = new Point(Math.Max(0, TitleBarPanel.Width - 88), 0);
+        // Use the buttons' actual (DPI-scaled) widths instead of the 96-DPI
+        // design constants so they stay pinned to the right edge at any scaling.
+        _closeButton.Location = new Point(Math.Max(0, TitleBarPanel.Width - _closeButton.Width), 0);
+        _minimizeButton.Location = new Point(
+            Math.Max(0, TitleBarPanel.Width - _closeButton.Width - _minimizeButton.Width), 0);
     }
 
     private void HookHover(Label button, Color hoverBackColor)
@@ -212,9 +220,10 @@ internal class BaseDarkForm : Form
     {
         get
         {
-            var parameters = base.CreateParams;
-            parameters.ClassStyle |= 0x20000; // CS_DROPSHADOW
-            return parameters;
+            // Do not set CS_DROPSHADOW here: Windows renders that shadow shifted
+            // right/down, which made borderless windows look misaligned. The
+            // centered DWM shadow is enabled in OnHandleCreated instead.
+            return base.CreateParams;
         }
     }
 
@@ -229,11 +238,38 @@ internal class BaseDarkForm : Form
 
             int darkMode = 1;
             DwmSetWindowAttribute(Handle, 20, ref darkMode, sizeof(int));
+
+            if (FormBorderStyle == FormBorderStyle.None)
+            {
+                // Borderless windows used to rely on CS_DROPSHADOW, which Windows
+                // always paints offset towards the bottom-right. Enable the DWM
+                // non-client shadow instead so it stays centered around the frame.
+                int renderingPolicy = 2; // DWMNCRP_ENABLED
+                DwmSetWindowAttribute(Handle, 2, ref renderingPolicy, sizeof(int));
+
+                var margins = new Margins
+                {
+                    Left = 1,
+                    Right = 1,
+                    Top = 1,
+                    Bottom = 1
+                };
+                DwmExtendFrameIntoClientArea(Handle, ref margins);
+            }
         }
         catch
         {
             // Windows 10 and older simply keep square corners.
         }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Margins
+    {
+        public int Left;
+        public int Right;
+        public int Top;
+        public int Bottom;
     }
 
     [DllImport("user32.dll")]
@@ -244,4 +280,7 @@ internal class BaseDarkForm : Form
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmExtendFrameIntoClientArea(IntPtr hwnd, ref Margins margins);
 }

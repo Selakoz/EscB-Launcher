@@ -35,4 +35,20 @@ internal sealed class OptionalModInfo
 
     [JsonPropertyName("enabled_by_default")]
     public bool EnabledByDefault { get; set; }
+
+    /// <summary>
+    /// Optional mutually-exclusive group name. Mods sharing the same non-empty
+    /// group are shown as radio buttons and only one of them can be enabled.
+    /// </summary>
+    [JsonPropertyName("group")]
+    public string Group { get; set; } = string.Empty;
+}
+
+internal sealed class SecretBuildInfo
+{
+    [JsonPropertyName("code")]
+    public string Code { get; set; } = string.Empty;
+
+    [JsonPropertyName("build")]
+    public BuildInfo Build { get; set; } = new();
 }

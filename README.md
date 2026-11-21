@@ -4,23 +4,29 @@
 тёмный интерфейс, оффлайн-запуск, автообновление сборок с GitHub, фикс дискретной
 видеокарты через реестр и телеметрия железа в Discord.
 
-Проект состоит из двух приложений:
+Решение состоит из трёх проектов:
 
 | Проект | Назначение | Итоговый файл |
 | --- | --- | --- |
 | `EscapeBookBootstrapper` | лёгкий загрузчик и автообновление | `EscapeBookBootstrapper.exe` |
+| `EscBUpdater` | проверка обновлений по ярлыку и запуск клиента | `EscBUpdater.exe` (вшит в загрузчик) |
 | `EscapeBook` | основной лаунчер (WinForms) | `EscBClient.exe` (в архиве `EscBClient.zip`) |
 
-## Как это работает (2 шага)
+## Как это работает
 
-1. Игрок запускает **`EscapeBookBootstrapper.exe`**.
+1. Игрок запускает **`EscapeBookBootstrapper.exe`** (или ярлык «EscB Client»).
 2. Загрузчик запрашивает последний релиз на GitHub и сравнивает его `tag_name`
    с локальным `%APPDATA%\.escapebook\launcher\.bootstrapper_version`:
    - если версии совпадают — сразу запускает установленный `EscBClient.exe`;
-   - если нужен апдейт — скачивает `EscBClient.zip`, распаковывает его в
-     `%APPDATA%\.escapebook\launcher\` (с перезаписью и обходом блокировки
-     запущенного `.exe`), сохраняет новый тег и запускает клиент.
-3. Загрузчик завершает работу, дальше играет лаунчер.
+   - если нужен апдейт — скачивает `EscBClient.zip`, удаляет файлы прошлой
+     версии из папки лаунчера (сохраняя `user_settings.json`,
+     `.launcher_config.json` и папку `instances/`), распаковывает архив,
+     сохраняет новый тег и запускает клиент.
+3. После первого успешного запуска загрузчик создаёт ярлык **«EscB Client»** на
+   рабочем столе. Ярлык указывает на `EscBUpdater.exe` — он вшит в загрузчик и
+   распаковывается в папку лаунчера. Обновлятор проверяет обновления, при
+   наличии скачивает и устанавливает их, затем запускает `EscBClient.exe`.
+4. Загрузчик завершает работу, дальше играет лаунчер.
 
 Если GitHub недоступен, загрузчик тихо запускает уже установленный
 `EscBClient.exe`. Все ошибки пишутся в
@@ -75,9 +81,10 @@ dotnet run --project EscapeBook.csproj
 
 ### Публикация
 
-Архитектура поставки: **bootstrapper — крошечный standalone EXE** (.NET Framework 4.8,
-есть на любой Windows 10/11, ~30 КБ), **EscBClient.zip — self-contained** (внутри
-полный .NET 8 Desktop Runtime, поэтому игра запускается на чистой Windows).
+Архитектура поставки: **bootstrapper — самостоятельный standalone EXE** (.NET Framework 4.8,
+есть на любой Windows 10/11, ~350 КБ вместе с вшитым `EscBUpdater.exe`),
+**EscBClient.zip — self-contained** (внутри полный .NET 8 Desktop Runtime, поэтому
+игра запускается на чистой Windows).
 
 ```powershell
 # Всё одной командой (сборка + publish + архив + размеры):
@@ -145,8 +152,10 @@ dotnet publish EscapeBookBootstrapper/EscapeBookBootstrapper.csproj -c Release -
 ├── assets\banner.png           баннер (встроенный или скачанный)
 ├── launcher\                   установленный клиент (управляет bootstrapper)
 │   ├── EscBClient.exe
+│   ├── EscBUpdater.exe         проверка обновлений (запускается ярлыком)
 │   ├── .bootstrapper_version   локальный тег последнего обновления
-│   └── bootstrapper.log        журнал загрузчика
+│   ├── bootstrapper.log        журнал загрузчика
+│   └── updater.log             журнал обновлятора
 └── instances\
     └── <id сборки>\
         ├── .client_version     версия установленного патча
@@ -158,6 +167,10 @@ dotnet publish EscapeBookBootstrapper/EscapeBookBootstrapper.csproj -c Release -
 ```
 
 `options.txt` игрока никогда не перезаписывается при обновлении сборки.
+
+При обновлении клиента загрузчик (и `EscBUpdater.exe`) сначала полностью
+очищают папку `launcher` от файлов прошлой версии, сохраняя `user_settings.json`,
+`.launcher_config.json`, сам обновлятор и папку `instances/`.
 
 ## JVM-аргументы
 
