@@ -1,0 +1,15 @@
+name = "escapebook-skins"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "escapebook-db"
+database_id = "add53d51-046d-41b2-95bb-272610cb2814"
+
+[vars]
+# Base URL of the auth worker used to validate "Authorization: Bearer <token>".
+# Add a token-validation endpoint there (see the note in src/index.ts), then set
+# this in the Dashboard (Workers -> escapebook-skins -> Settings -> Variables)
+# or here before deploying. While empty, upload/delete reply 503.
+AUTH_WORKER_URL = "https://escapebook-auth.fireman777sasha.workers.dev"
