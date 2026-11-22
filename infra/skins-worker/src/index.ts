@@ -423,10 +423,12 @@ async function handleGetSkin(
       );
     }
 
+    // Revalidate on every join so a changed skin is picked up immediately
+    // instead of being served from a stale hour-long cache.
     return pngResponse(
       bytes,
       origin,
-      "public, max-age=3600, stale-while-revalidate=86400",
+      "no-cache, must-revalidate",
       row.content_type || "image/png",
     );
   } catch (error) {
