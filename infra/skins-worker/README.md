@@ -34,9 +34,9 @@ CREATE TABLE IF NOT EXISTS skins (
 The worker validates the token by calling:
 
 ```
-GET ${AUTH_WORKER_URL}/auth/validate
+GET /auth/validate
 Authorization: Bearer <session_token>
-X-HWID: <device id>          (optional, forwarded when present)
+X-HWID: <device id>          (empty when the caller has no device id)
 ```
 
 Expected `200` body:
@@ -53,10 +53,17 @@ verbatim so the auth worker can reject a token used on another device
 (`401 hwid_mismatch`). Web uploads without `X-HWID` are validated by token
 alone.
 
-`/auth/validate` is implemented by `infra/auth-worker`. Set `AUTH_WORKER_URL`
-in the Dashboard under **Workers → escapebook-skins → Settings → Variables**.
-While the variable is empty, uploads/deletes fail closed with
-`503 auth_not_configured`.
+`/auth/validate` is implemented by `infra/auth-worker`. In production the call
+goes through the `AUTH` **service binding** declared in `wrangler.toml`
+(`service = "escapebook-auth"`). Calling the auth worker over its public
+`*.workers.dev` hostname does not work: both Workers share the same
+`*.workers.dev` zone, and Cloudflare answers that same-zone subrequest with a
+404 before it reaches the auth worker.
+
+`AUTH_WORKER_URL` is only a fallback for local development (for example when
+`wrangler dev` has no local auth worker to bind to). When neither is available,
+uploads/deletes fail closed with `503 auth_unavailable` (`AUTH_WORKER_URL
+missing`).
 
 ## API
 
@@ -76,7 +83,8 @@ Upload success:
 Errors are JSON: `{ "ok": false, "error": "code", "message": "..." }`.
 
 Status codes: `400` invalid PNG/dimensions/nickname, `401` missing/invalid
-token, `413` file over 1 MB, `503` auth not configured/unavailable.
+token, `413` file over 1 MB, `503` auth unavailable (missing config or the auth
+worker is down).
 
 ## Local development
 

@@ -11,17 +11,27 @@
 //   DELETE /api/skins                  -> removes the caller's skin
 //
 // Auth contract (implemented by the auth worker):
-//   GET  ${AUTH_WORKER_URL}/auth/validate
+//   GET  /auth/validate
 //        Authorization: Bearer <session_token>
-//        X-HWID: <device id>   (optional; forwarded when the caller sends it)
+//        X-HWID: <device id>   (empty string when the caller sends no device id)
 //   200  { "valid": true, "nickname": "<MC nickname>" }
 //        ({ "ok": true, "nickname": "..." } is also accepted)
 //   401  anything else
-// While AUTH_WORKER_URL is unset, uploads and deletes fail closed with 503.
+//
+// In production the call goes through the AUTH service binding. Fetching
+// another Worker over the public *.workers.dev hostname is answered with a 404
+// by Cloudflare's same-zone routing, so AUTH_WORKER_URL is only a fallback for
+// local development. While neither is configured, uploads/deletes fail closed
+// with 503.
 
 interface Env {
   DB: D1Database;
-  // Base URL of the auth worker, without a trailing slash.
+  // Service binding to the auth worker (see wrangler.toml). This is the only
+  // reliable way to call another Worker from Cloudflare: same-zone subrequests
+  // over the public *.workers.dev hostname are answered with a 404 at the edge.
+  AUTH?: Fetcher;
+  // Base URL of the auth worker, without a trailing slash. Fallback for local
+  // development where the service binding cannot be resolved.
   AUTH_WORKER_URL?: string;
 }
 
@@ -41,6 +51,9 @@ interface SkinInfoRow {
 
 const ALLOWED_ORIGIN = "https://escapebook.site";
 const MAX_SKIN_BYTES = 1_048_576; // 1 MiB
+// Cold starts on the auth worker plus a D1 round-trip can exceed a few seconds,
+// so allow a little slack before treating the call as a network failure.
+const AUTH_TIMEOUT_MS = 10_000;
 // Multipart framing adds a small amount on top of the file itself.
 const MAX_REQUEST_BYTES = MAX_SKIN_BYTES + 65_536;
 const NICKNAME_RE = /^[A-Za-z0-9_]{3,16}$/;
@@ -174,6 +187,13 @@ type AuthResult =
   | { ok: true; nickname: string }
   | { ok: false; response: Response };
 
+interface AuthValidatePayload {
+  valid?: unknown;
+  ok?: unknown;
+  nickname?: unknown;
+  error?: unknown;
+}
+
 function parseBearerToken(request: Request): string | null {
   const header = request.headers.get("Authorization");
   if (!header) return null;
@@ -188,6 +208,19 @@ function parseHwid(request: Request): string | null {
   if (!header) return null;
   const trimmed = header.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+// Normalizes the configured auth worker base URL. Variables edited in the
+// Dashboard are easy to break (wrapping quotes, missing scheme, trailing
+// slashes) and every one of those mistakes makes fetch() throw, which then
+// surfaces as a generic 503.
+function resolveAuthBaseUrl(env: Env): string | null {
+  const raw = env.AUTH_WORKER_URL;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().replace(/^["']+|["']+$/g, "").trim();
+  if (trimmed.length === 0) return null;
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  return withScheme.replace(/\/+$/, "");
 }
 
 // Validates the bearer token against the auth worker. Fails closed.
@@ -209,43 +242,89 @@ async function authenticate(
     };
   }
 
-  const baseUrl = (env.AUTH_WORKER_URL ?? "").trim().replace(/\/+$/, "");
-  if (!baseUrl) {
+  const authBinding = env.AUTH;
+  const authUrl = resolveAuthBaseUrl(env);
+  if (!authBinding && !authUrl) {
+    console.error(
+      "skins-worker: neither the AUTH service binding nor AUTH_WORKER_URL is configured",
+    );
     return {
       ok: false,
       response: errorResponse(
         503,
-        "auth_not_configured",
-        "AUTH_WORKER_URL is not configured on the skins worker.",
+        "auth_unavailable",
+        "AUTH_WORKER_URL missing",
         origin,
       ),
     };
   }
 
+  // A service binding only uses the path; the hostname is ignored. When the
+  // binding is absent (local dev) the configured URL is used instead.
+  const validateUrl = authUrl
+    ? `${authUrl}/auth/validate`
+    : "https://escapebook-auth/auth/validate";
+  const route = authBinding ? "AUTH service binding" : validateUrl;
   const hwid = parseHwid(request);
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-    Accept: "application/json",
-  };
-  if (hwid !== null) headers["X-HWID"] = hwid;
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
+  const timer = setTimeout(() => controller.abort(), AUTH_TIMEOUT_MS);
   try {
-    const response = await fetch(`${baseUrl}/auth/validate`, {
+    const init: RequestInit = {
       method: "GET",
-      headers,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        // Always send the header (empty means "no device binding") so the
+        // auth worker sees a consistent request shape.
+        "X-HWID": hwid ?? "",
+        Accept: "application/json",
+      },
       signal: controller.signal,
-    });
+    };
 
-    if (response.status === 401 || response.status === 403) {
-      return {
-        ok: false,
-        response: errorResponse(401, "invalid_token", "The provided token is not valid.", origin),
-      };
+    let response: Response | null = null;
+    if (authBinding) {
+      try {
+        response = await authBinding.fetch(validateUrl, init);
+      } catch (error) {
+        const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+        console.error("Auth validation failed:", error);
+        console.error(
+          `skins-worker: AUTH service binding call failed (${reason}); falling back to ${validateUrl}`,
+        );
+      }
     }
+    if (response === null) {
+      response = await fetch(validateUrl, init);
+    }
+
+    let authData: AuthValidatePayload = {};
+    let bodyParsed = false;
+    try {
+      authData = (await response.json()) as AuthValidatePayload;
+      bodyParsed = true;
+    } catch {
+      console.error(
+        `skins-worker: auth worker returned a non-JSON response (HTTP ${response.status}) via ${route}`,
+      );
+    }
+
+    const upstreamError =
+      typeof authData.error === "string" ? authData.error : `http_${response.status}`;
+
     if (!response.ok) {
-      console.error(`skins-worker: auth worker returned HTTP ${response.status}`);
+      if (response.status === 401 || response.status === 403) {
+        console.error(
+          `skins-worker: auth rejected the token (HTTP ${response.status}: ${upstreamError})`,
+        );
+        return {
+          ok: false,
+          response: errorResponse(401, "invalid_token", "The provided token is not valid.", origin),
+        };
+      }
+      console.error(
+        `skins-worker: auth worker returned HTTP ${response.status} (${upstreamError}) via ${route}`,
+      );
       return {
         ok: false,
         response: errorResponse(
@@ -257,21 +336,17 @@ async function authenticate(
       };
     }
 
-    let payload: unknown;
-    try {
-      payload = await response.json();
-    } catch {
-      console.error("skins-worker: auth worker returned a non-JSON response");
+    if (!bodyParsed) {
       return {
         ok: false,
         response: errorResponse(502, "bad_auth_response", "Invalid auth response.", origin),
       };
     }
 
-    const body = payload as { valid?: unknown; ok?: unknown; nickname?: unknown } | null;
-    const approved = body !== null && (body.valid === true || body.ok === true);
-    const nickname = body !== null && typeof body.nickname === "string" ? body.nickname : "";
+    const approved = authData.valid === true || authData.ok === true;
+    const nickname = typeof authData.nickname === "string" ? authData.nickname : "";
     if (!approved || !NICKNAME_RE.test(nickname)) {
+      console.error(`skins-worker: auth rejected the token (${upstreamError})`);
       return {
         ok: false,
         response: errorResponse(401, "invalid_token", "The provided token is not valid.", origin),
@@ -280,8 +355,9 @@ async function authenticate(
 
     return { ok: true, nickname };
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    console.error(`skins-worker: auth request failed: ${reason}`);
+    const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    console.error("Auth validation failed:", error);
+    console.error(`skins-worker: auth request via ${route} failed (${reason})`);
     return {
       ok: false,
       response: errorResponse(
