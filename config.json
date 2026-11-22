@@ -9,6 +9,7 @@
     {
       "id": "season-test",
       "name": "Тестовая сборка (NeoForge 1.21.1)",
+      "version_profile": "neoforge-21.1.256",
       "mc_version": "1.21.1",
       "version": "0.0.1",
       "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.4/season-test.zip"
@@ -16,6 +17,7 @@
     {
       "id": "test",
       "name": "Тестовая сборка",
+      "version_profile": "neoforge-21.1.256",
       "mc_version": "1.21.1",
       "version": "0.0.1",
       "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.4/season-test.zip"
@@ -23,6 +25,7 @@
     {
       "id": "season2",
       "name": "Сезон 2 — Актуальный",
+      "version_profile": "neoforge-21.1.256",
       "mc_version": "1.21.1",
       "version": "1.0.0",
       "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.4/season-test.zip"
@@ -30,6 +33,7 @@
     {
       "id": "season1",
       "name": "Сезон 1 — Архив",
+      "version_profile": "neoforge-21.1.256",
       "mc_version": "1.20.1",
       "version": "1.0.0",
       "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.4/season-test.zip"
@@ -41,6 +45,7 @@
       "build": {
         "id": "secret_season",
         "name": "Секретный сезон",
+        "version_profile": "neoforge-21.1.256",
         "mc_version": "1.21.1",
         "version": "1.0.0",
         "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.4/season-test.zip"
