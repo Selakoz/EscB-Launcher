@@ -6,11 +6,11 @@ namespace EscapeBook.Services;
 internal sealed class ConfigService
 {
     /// <summary>
-    /// TODO: замените на реальный URL вашего config.json в GitHub.
-    /// Например: https://raw.githubusercontent.com/your-account/your-repo/main/config.json
+    /// Remote launcher configuration. This is the only source of build URLs:
+    /// there is intentionally no local/cached/hardcoded fallback.
     /// </summary>
     public const string CONFIG_URL =
-        "https://raw.githubusercontent.com/Selakoz/EscB-Launcher/refs/heads/main/config.json";
+        "https://raw.githubusercontent.com/Selakoz/EscB-Launcher/main/config.json";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -32,7 +32,7 @@ internal sealed class ConfigService
     {
         progress.Report(new LaunchProgress(2, "Загрузка конфигурации с GitHub..."));
 
-        var errors = new List<string>();
+        string json;
 
         try
         {
@@ -45,83 +45,95 @@ internal sealed class ConfigService
                 timeoutCts.Token);
 
             response.EnsureSuccessStatusCode();
-            string json = await response.Content.ReadAsStringAsync(timeoutCts.Token);
-            var config = Deserialize(json);
-
-            try
-            {
-                LauncherPaths.EnsureRoot();
-                await File.WriteAllTextAsync(LauncherPaths.ConfigCacheFile, json, CancellationToken.None);
-            }
-            catch (Exception cacheError)
-            {
-                AppLog.Error("Config cache write", cacheError);
-            }
-
-            AppLog.Write(
-                $"Config loaded from GitHub: builds={config.Builds.Count}, " +
-                $"jvmPreset={config.JvmPresetVersion}");
-            return config;
+            json = await response.Content.ReadAsStringAsync(timeoutCts.Token);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
-            errors.Add("таймаут загрузки (20 секунд)");
+            throw new InvalidOperationException(
+                "Ошибка: не удалось загрузить свежий config.json с GitHub (таймаут 20 секунд).\n" +
+                $"URL: {CONFIG_URL}",
+                ex);
         }
         catch (Exception ex)
         {
-            errors.Add(ex.Message);
             AppLog.Error("Config download", ex);
+            throw new InvalidOperationException(
+                "Ошибка: не удалось загрузить свежий config.json с GitHub.\n" +
+                $"URL: {CONFIG_URL}\n" +
+                $"Причина: {ex.Message}",
+                ex);
         }
 
-        var fallbacks = new[]
-        {
-            (Path: LauncherPaths.ConfigCacheFile, Label: "кэш конфигурации"),
-            (Path: Path.Combine(AppContext.BaseDirectory, "config.json"), Label: "локальный config.json")
-        };
+        // The cache is write-only (kept for diagnostics). It is never read as a
+        // fallback, so a stale or corrupted .launcher_config.json can never
+        // override the freshly downloaded remote configuration.
+        LauncherConfig config = Deserialize(json);
 
-        foreach (var fallback in fallbacks)
+        try
         {
-            if (!File.Exists(fallback.Path))
-                continue;
-
-            try
-            {
-                string json = await File.ReadAllTextAsync(fallback.Path, cancellationToken);
-                var config = Deserialize(json);
-                progress.Report(new LaunchProgress(6, $"Использую {fallback.Label}"));
-                AppLog.Write(
-                    $"Config loaded from {fallback.Label}: builds={config.Builds.Count}, " +
-                    $"jvmPreset={config.JvmPresetVersion}");
-                return config;
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                errors.Add($"{fallback.Label}: {ex.Message}");
-                AppLog.Error($"Config fallback ({fallback.Label})", ex);
-            }
+            LauncherPaths.EnsureRoot();
+            await File.WriteAllTextAsync(LauncherPaths.ConfigCacheFile, json, CancellationToken.None);
+        }
+        catch (Exception cacheError)
+        {
+            AppLog.Error("Config cache write", cacheError);
         }
 
-        throw new InvalidOperationException(
-            "Не удалось загрузить конфигурацию лаунчера.\n\n" +
-            string.Join("\n", errors.Distinct()) +
-            "\n\nПроверьте CONFIG_URL и доступ к интернету. " +
-            "Локальный файл config.json также должен лежать рядом с EscapeBook.exe.");
+        AppLog.Write(
+            $"Config loaded from GitHub: builds={config.Builds.Count}, " +
+            $"jvmPreset={config.JvmPresetVersion}");
+        return config;
     }
 
     private static LauncherConfig Deserialize(string json)
     {
-        var config = JsonSerializer.Deserialize<LauncherConfig>(json, JsonOptions)
+        LauncherConfig config;
+
+        try
+        {
+            config = JsonSerializer.Deserialize<LauncherConfig>(json, JsonOptions)
                      ?? throw new InvalidDataException("JSON конфигурации пуст.");
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException(
+                "Ошибка: не удалось разобрать config.json, полученный с GitHub.\n" +
+                ex.Message,
+                ex);
+        }
 
         config.NormalizeAndValidate();
+
+        // Fail fast with a descriptive message instead of silently falling back
+        // to an old URL when a build has no usable client_zip_url.
+        foreach (BuildInfo build in config.Builds)
+            ValidateClientZipUrl(build);
+
+        foreach (SecretBuildInfo secret in config.SecretBuilds)
+            ValidateClientZipUrl(secret.Build);
+
         return config;
+    }
+
+    private static void ValidateClientZipUrl(BuildInfo build)
+    {
+        if (string.IsNullOrWhiteSpace(build.ClientZipUrl))
+        {
+            throw new InvalidDataException(
+                "Ошибка: не удалось получить URL сборки из config.json — " +
+                $"поле client_zip_url пусто для сборки \"{build.Id}\".");
+        }
+
+        if (!Uri.TryCreate(build.ClientZipUrl, UriKind.Absolute, out Uri? uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            throw new InvalidDataException(
+                "Ошибка: не удалось получить URL сборки из config.json — " +
+                $"некорректный client_zip_url для сборки \"{build.Id}\": {build.ClientZipUrl}");
+        }
     }
 }

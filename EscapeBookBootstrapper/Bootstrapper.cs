@@ -280,6 +280,283 @@ namespace EscapeBookBootstrapper
             }
         }
 
+        // ------------------------------------------------------- startup maintenance
+
+        /// <summary>
+        /// Файлы, которые переустановка оставляет на месте: настройки игрока,
+        /// кэш конфига, сам загрузчик/обновлятор и журналы.
+        /// </summary>
+        private static readonly HashSet<string> ReinstallPreservedFiles =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "user_settings.json",
+                ".launcher_config.json",
+                UpdaterExecutableName,
+                "EscapeBookBootstrapper.exe",
+                "bootstrapper.log",
+                "updater.log"
+            };
+
+        /// <summary>
+        /// Режим «Переустановить»: очищает папку лаунчера, не трогая
+        /// пользовательские настройки и папку <c>instances</c>, и сбрасывает
+        /// маркеры версий, чтобы обычный поток загрузчика скачал свежий
+        /// <c>EscBClient.zip</c>.
+        /// </summary>
+        public static void ReinstallLauncher()
+        {
+            string launcherDirectory = Path.Combine(InstallPathConfig.GetBasePath(), "launcher");
+
+            int deleted = 0;
+            int renamed = 0;
+
+            try
+            {
+                if (Directory.Exists(launcherDirectory))
+                {
+                    foreach (string file in Directory.GetFiles(launcherDirectory))
+                    {
+                        if (ReinstallPreservedFiles.Contains(Path.GetFileName(file)))
+                            continue;
+
+                        try
+                        {
+                            File.Delete(file);
+                            deleted++;
+                            continue;
+                        }
+                        catch
+                        {
+                            // Файл занят запущенным клиентом — переименуем ниже.
+                        }
+
+                        try
+                        {
+                            string backupPath = file + ".old";
+                            TryDeleteFile(backupPath);
+                            File.Move(file, backupPath);
+                            renamed++;
+                        }
+                        catch
+                        {
+                            // Не удалось даже переименовать: файл заменится при распаковке.
+                        }
+                    }
+
+                    foreach (string directory in Directory.GetDirectories(launcherDirectory))
+                    {
+                        if (string.Equals(
+                                Path.GetFileName(directory),
+                                "instances",
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        try
+                        {
+                            Directory.Delete(directory, true);
+                            deleted++;
+                        }
+                        catch
+                        {
+                            // Папка занята — пропускаем.
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("Переустановка: не удалось очистить папку лаунчера: " + ex.Message);
+            }
+
+            // .client_version — фактический маркер, который читает
+            // ReadLocalVersion(). Без его удаления загрузчик посчитает
+            // установленную версию актуальной и не скачает архив заново.
+            TryDeleteFile(Path.Combine(launcherDirectory, ".client_version"));
+            TryDeleteFile(Path.Combine(launcherDirectory, ".bootstrapper_version"));
+            TryDeleteFile(Path.Combine(launcherDirectory, ".updater_version"));
+
+            Log("Переустановка: папка лаунчера очищена (удалено " +
+                deleted + ", отложено " + renamed + ").");
+
+            MessageBox.Show(
+                "Лаунчер очищен. Сейчас будет скачана свежая версия.",
+                "Переустановка",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+
+        /// <summary>
+        /// Режим «Удалить»: после подтверждения удаляет все данные лаунчера,
+        /// пользовательские настройки, сборки и ярлык на рабочем столе.
+        /// </summary>
+        public static void UninstallLauncher()
+        {
+            DialogResult confirmation = MessageBox.Show(
+                "Вы уверены, что хотите ПОЛНОСТЬЮ удалить EscB Client?\n\n" +
+                "Будут удалены:\n" +
+                "• Все настройки и сохранения\n" +
+                "• Все установленные сборки\n" +
+                "• Ярлык на рабочем столе\n\n" +
+                "Это действие нельзя отменить.",
+                "Подтверждение удаления",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+
+            if (confirmation != DialogResult.Yes)
+                return;
+
+            List<string> failures = new List<string>();
+
+            // Пользовательскую папку установки читаем ДО удаления
+            // %LOCALAPPDATA%\EscB: там лежит install_path.txt.
+            string configuredRoot = ReadConfiguredRootForUninstall();
+
+            string appDataRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                ".escapebook");
+            DeleteDirectoryForUninstall(appDataRoot, failures);
+
+            string localAppDataRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "EscB");
+            DeleteDirectoryForUninstall(localAppDataRoot, failures);
+
+            // Нестандартная папка установки: убираем только файлы лаунчера,
+            // не затрагивая посторонние данные пользователя.
+            if (!string.IsNullOrEmpty(configuredRoot))
+            {
+                DeleteDirectoryForUninstall(Path.Combine(configuredRoot, "launcher"), failures);
+                DeleteDirectoryForUninstall(Path.Combine(configuredRoot, "instances"), failures);
+                DeleteDirectoryForUninstall(Path.Combine(configuredRoot, "assets"), failures);
+
+                DeleteFileForUninstall(Path.Combine(configuredRoot, "user_settings.json"), failures);
+                DeleteFileForUninstall(Path.Combine(configuredRoot, "auth_session.json"), failures);
+                DeleteFileForUninstall(Path.Combine(configuredRoot, ".launcher_config.json"), failures);
+                DeleteFileForUninstall(Path.Combine(configuredRoot, "launcher.log"), failures);
+            }
+
+            DeleteFileForUninstall(
+                Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory),
+                    ShortcutFileName),
+                failures);
+
+            DeleteFileForUninstall(
+                Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                    ShortcutFileName),
+                failures);
+
+            if (failures.Count == 0)
+            {
+                Log("Удаление: все данные лаунчера удалены.");
+                MessageBox.Show(
+                    "EscB Client полностью удалён.",
+                    "Готово",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            Log("Удаление завершено с ошибками: " + string.Join("; ", failures.ToArray()));
+            MessageBox.Show(
+                "Не удалось удалить некоторые данные:\n\n• " +
+                string.Join("\n• ", failures.ToArray()) +
+                "\n\nВозможно, клиент или обновлятор ещё запущены. " +
+                "Закройте их и повторите попытку.",
+                "Ошибка",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+
+        /// <summary>
+        /// Возвращает нестандартный путь установки из install_path.txt или null,
+        /// если используется путь по умолчанию. Читает файл без побочных
+        /// эффектов (не создаёт папки).
+        /// </summary>
+        private static string ReadConfiguredRootForUninstall()
+        {
+            try
+            {
+                if (!File.Exists(InstallPathConfig.ConfigFile))
+                    return null;
+
+                string raw = File.ReadAllText(InstallPathConfig.ConfigFile)
+                    .Trim()
+                    .TrimStart('\uFEFF')
+                    .Trim('"');
+
+                if (string.IsNullOrWhiteSpace(raw) || !Path.IsPathRooted(raw))
+                    return null;
+
+                string fullPath = Path.GetFullPath(raw);
+                string defaultRoot = Path.GetFullPath(Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    ".escapebook"));
+
+                if (string.Equals(fullPath, defaultRoot, StringComparison.OrdinalIgnoreCase))
+                    return null;
+
+                // Нестандартная папка не должна быть родителем папки по
+                // умолчанию: иначе можно задеть посторонние данные рядом.
+                string normalizedCustom = fullPath.TrimEnd('\\', '/');
+                if (defaultRoot.StartsWith(
+                        normalizedCustom + Path.DirectorySeparatorChar,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return null;
+                }
+
+                // Корень диска (например, C:\) удалять нельзя.
+                string pathRoot = Path.GetPathRoot(fullPath);
+                if (!string.IsNullOrEmpty(pathRoot) &&
+                    string.Equals(
+                        fullPath.TrimEnd('\\', '/'),
+                        pathRoot.TrimEnd('\\', '/'),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return null;
+                }
+
+                return fullPath;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static void DeleteDirectoryForUninstall(string path, List<string> failures)
+        {
+            try
+            {
+                if (Directory.Exists(path))
+                    Directory.Delete(path, true);
+            }
+            catch (Exception ex)
+            {
+                Log("Удаление: не удалось удалить '" + path + "': " + ex.Message);
+                failures.Add(path);
+            }
+        }
+
+        private static void DeleteFileForUninstall(string path, List<string> failures)
+        {
+            try
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch (Exception ex)
+            {
+                Log("Удаление: не удалось удалить '" + path + "': " + ex.Message);
+                failures.Add(path);
+            }
+        }
+
         // ------------------------------------------------------------------ release
 
         private static async Task<ReleaseInfo> FetchLatestReleaseAsync()
@@ -732,16 +1009,29 @@ namespace EscapeBookBootstrapper
                 string userDesktop = Environment.GetFolderPath(
                     Environment.SpecialFolder.DesktopDirectory);
 
-                string existing = FindExistingShortcut(commonDesktop, userDesktop);
-                if (!string.IsNullOrEmpty(existing))
-                {
-                    Log("Ярлык уже существует: " + existing);
-                    return;
-                }
-
+                // Иконка всегда берётся из EscBClient.exe (а не из обновлятора
+                // или стандартной иконки Windows).
                 string iconPath = File.Exists(MainExecutablePath)
                     ? MainExecutablePath
                     : updaterPath;
+
+                string existing = FindExistingShortcut(commonDesktop, userDesktop);
+                if (!string.IsNullOrEmpty(existing))
+                {
+                    // Ярлык мог быть создан прошлой версией с иконкой по
+                    // умолчанию: перезаписываем цель и IconLocation.
+                    try
+                    {
+                        CreateShortcut(existing, updaterPath, ShortcutDescription, iconPath);
+                        Log("Ярлык обновлён: " + existing + " (иконка: " + iconPath + ",0)");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log("Не удалось обновить существующий ярлык '" + existing + "': " + ex.Message);
+                    }
+
+                    return;
+                }
 
                 string[] targetDirectories = new string[] { commonDesktop, userDesktop };
 
@@ -1024,7 +1314,7 @@ namespace EscapeBookBootstrapper
         /// </summary>
         public static void SaveEulaAcceptance()
         {
-            string content = EulaVersion + "|" + DateTime.UtcNow.ToString("o");
+            string content = EulaVersion;
 
             try
             {
@@ -1058,8 +1348,8 @@ namespace EscapeBookBootstrapper
         }
 
         /// <summary>
-        /// Формат флага: "версия|ISO-время". Старые версии соглашения
-        /// требуют повторного принятия.
+        /// Формат флага: "версия" (поддерживается и старый "версия|ISO-время").
+        /// Старые версии соглашения требуют повторного принятия.
         /// </summary>
         private static bool IsCurrentEulaVersion(string content)
         {

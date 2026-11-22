@@ -95,7 +95,8 @@ internal class BaseDarkForm : Form
         {
             BackColor = Theme.Accent,
             Location = new Point(20, 14),
-            Size = new Size(4, 16)
+            Size = new Size(4, 16),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left
         };
         TitleBarPanel.Controls.Add(accent);
 
@@ -107,7 +108,11 @@ internal class BaseDarkForm : Form
             Font = Theme.Font(9.5f, FontStyle.Bold),
             Location = new Point(34, 0),
             Size = new Size(360, 44),
-            TextAlign = ContentAlignment.MiddleLeft
+            TextAlign = ContentAlignment.MiddleLeft,
+            // Top|Left keeps the 96-DPI offset after AutoScaleMode.Dpi has
+            // scaled the label; stretching is intentionally avoided because the
+            // window buttons occupy the right end of the title bar.
+            Anchor = AnchorStyles.Top | AnchorStyles.Left
         };
         TitleBarPanel.Controls.Add(TitleLabel);
 
@@ -179,8 +184,20 @@ internal class BaseDarkForm : Form
         BackColor = Theme.Background,
         ForeColor = Theme.Muted,
         Font = Theme.Font(10f),
-        Cursor = Cursors.Hand
+        Cursor = Cursors.Hand,
+        // Pinned to the right edge; RepositionTitleButtons below also keeps the
+        // gap between the two buttons correct after a DPI change.
+        Anchor = AnchorStyles.Top | AnchorStyles.Right
     };
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+
+        // WinForms has re-scaled the title bar row and the buttons by now; the
+        // pinned locations must be recomputed from the new actual widths.
+        RepositionTitleButtons();
+    }
 
     private void RepositionTitleButtons()
     {

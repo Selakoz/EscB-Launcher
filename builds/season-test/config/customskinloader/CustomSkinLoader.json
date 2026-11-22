@@ -4,7 +4,7 @@
     {
       "name": "EscapeBook",
       "type": "CustomSkinAPI",
-      "root": "https://escapebook.site/api/skins/"
+      "root": "https://escapebook-skins.fireman777sasha.workers.dev/api/skins/"
     }
   ]
 }

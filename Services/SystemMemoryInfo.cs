@@ -30,10 +30,7 @@ internal static class SystemMemoryInfo
     {
         try
         {
-            var status = new MEMORYSTATUSEX
-            {
-                dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>()
-            };
+            var status = CreateStatus();
 
             if (GlobalMemoryStatusEx(ref status))
                 return (int)(status.ullAvailPhys / 1024UL / 1024UL);
@@ -45,4 +42,27 @@ internal static class SystemMemoryInfo
 
         return 0;
     }
+
+    /// <summary>Total physical memory in megabytes (0 when unknown).</summary>
+    public static int GetTotalPhysicalMemoryMb()
+    {
+        try
+        {
+            var status = CreateStatus();
+
+            if (GlobalMemoryStatusEx(ref status))
+                return (int)(status.ullTotalPhys / 1024UL / 1024UL);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Total memory query", ex);
+        }
+
+        return 0;
+    }
+
+    private static MEMORYSTATUSEX CreateStatus() => new()
+    {
+        dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>()
+    };
 }

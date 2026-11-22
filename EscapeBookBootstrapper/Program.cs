@@ -21,6 +21,36 @@ namespace EscapeBookBootstrapper
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
+            // Стартовое меню (запуск / переустановка / удаление) показывается
+            // до EULA, TLS и любых сетевых вызовов. В тихом режиме
+            // (--silent/--auto) меню пропускается: так ярлык и обновлятор
+            // работают как раньше.
+            if (!IsSilentLaunch(args))
+            {
+                DialogResult choice;
+
+                using (var menu = new StartupMenuForm())
+                {
+                    choice = menu.ShowDialog();
+                }
+
+                switch (choice)
+                {
+                    case DialogResult.Retry:
+                        Bootstrapper.ReinstallLauncher();
+                        break;
+
+                    case DialogResult.Abort:
+                        Bootstrapper.UninstallLauncher();
+                        return 0;
+
+                    case DialogResult.OK:
+                    default:
+                        // Обычный запуск: продолжаем проверку обновлений.
+                        break;
+                }
+            }
+
             // Лицензионное соглашение показывается до TLS, сетевых вызовов
             // и любых изменений на диске (первый запуск загрузчика).
             if (!Bootstrapper.IsEulaAccepted())
@@ -70,6 +100,34 @@ namespace EscapeBookBootstrapper
 
                 return 1;
             }
+        }
+
+        /// <summary>
+        /// Тихий запуск без стартового меню (совместимость с ярлыком,
+        /// указывающим на EscBUpdater, и с автоматическими вызовами).
+        /// </summary>
+        private static bool IsSilentLaunch(string[] args)
+        {
+            if (args == null)
+                return false;
+
+            foreach (string arg in args)
+            {
+                if (string.IsNullOrWhiteSpace(arg))
+                    continue;
+
+                string normalized = arg.Trim();
+
+                if (normalized.Equals("--silent", StringComparison.OrdinalIgnoreCase) ||
+                    normalized.Equals("--auto", StringComparison.OrdinalIgnoreCase) ||
+                    normalized.Equals("/silent", StringComparison.OrdinalIgnoreCase) ||
+                    normalized.Equals("/auto", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static void ShowError(string text)

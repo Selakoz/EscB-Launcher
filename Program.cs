@@ -6,19 +6,16 @@ namespace EscapeBook;
 
 internal static class Program
 {
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool SetProcessDPIAware();
-
     [STAThread]
     private static void Main()
     {
-        // Enable High DPI support.
-        // Must run before any window/handle is created so Windows does not
-        // bitmap-scale (stretch) the launcher on monitors above 100% scaling.
-        if (Environment.OSVersion.Version.Major >= 6) // Windows Vista or later
-        {
-            SetProcessDPIAware();
-        }
+        // Modern .NET 8 High DPI support.
+        // PerMonitorV2 is required for correct 200% (192 DPI) rendering; the
+        // legacy SetProcessDPIAware() call is system-DPI-only and gets blurry or
+        // mis-scaled when the window moves between monitors with different DPI.
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
 
         ApplicationConfiguration.Initialize();
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using EscapeBook.Models;
 
 namespace EscapeBook.Services;
 
@@ -57,6 +58,11 @@ internal static class SessionManager
             string tempPath = LauncherPaths.AuthSessionFile + ".tmp";
             File.WriteAllText(tempPath, json);
             File.Move(tempPath, LauncherPaths.AuthSessionFile, overwrite: true);
+
+            // Mirror the token into user_settings.json immediately so external
+            // tools (e.g. the skin upload page) can read it. Never logged.
+            PersistSessionToken(sessionToken);
+
             RaiseAuthChanged();
         }
         catch (Exception ex)
@@ -115,7 +121,40 @@ internal static class SessionManager
         // Only refresh the UI when the session is actually gone; otherwise the
         // handler would load the old file and re-authorize the window.
         if (cleared)
+        {
+            // Remove the token from user_settings.json as well so external
+            // tools cannot keep using a logged-out session.
+            PersistSessionToken(string.Empty);
             RaiseAuthChanged();
+        }
+    }
+
+    /// <summary>
+    /// Writes (or clears, when <paramref name="sessionToken"/> is empty) the
+    /// <c>session_token</c> field in user_settings.json. The token value is
+    /// secret and must never be written to the log.
+    /// </summary>
+    private static void PersistSessionToken(string sessionToken)
+    {
+        try
+        {
+            UserSettings settings = SettingsService.Load();
+
+            if (string.Equals(settings.SessionToken, sessionToken, StringComparison.Ordinal))
+                return;
+
+            settings.SessionToken = sessionToken;
+
+            if (!SettingsService.TrySave(settings, out string? error) &&
+                !string.IsNullOrEmpty(error))
+            {
+                AppLog.Write("Session token settings save warning: " + error);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Session token settings persist", ex);
+        }
     }
 
     private static void RaiseAuthChanged()

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
@@ -32,6 +33,7 @@ internal sealed class MainForm : BaseDarkForm
     private RoundedButton _settingsButton = null!;
     private RoundedButton _websiteButton = null!;
     private PictureBox _bannerBox = null!;
+    private Label _versionLabel = null!;
 
     private readonly UserSettings _settings;
     private readonly bool _isFirstLaunch;
@@ -69,21 +71,37 @@ internal sealed class MainForm : BaseDarkForm
     private bool _authStatusGreen;
     private bool _nicknameValid;
 
+    /// <summary>
+    /// Height the 96-DPI layout needs at minimum. Used only as a fallback: when
+    /// the DPI-scaled window does not fit the monitor's working area, the
+    /// content table grows past the viewport and the content area scrolls
+    /// instead of clipping the bottom rows (status/progress/play button).
+    /// </summary>
+    private const int ContentMinimumHeight = 470;
+
     public MainForm() : base(new Size(460, 510), allowMinimize: true)
     {
         TitleText = "EscB Client";
         Font = new Font("Segoe UI", 10f);
 
-        // Standard OS window frame (no custom title bar).
+        // The 96-DPI design baseline lives in BaseDarkForm; repeating it here
+        // documents that MainForm's whole layout is authored at 96 DPI and is
+        // scaled by Windows (PerMonitorV2) at 125%, 150%, 200% and so on.
         this.FormBorderStyle = FormBorderStyle.FixedSingle;
         this.MaximizeBox = false;
         this.MinimizeBox = true;
         this.AutoScaleMode = AutoScaleMode.Dpi;
+        this.AutoScaleDimensions = new SizeF(96f, 96f);
         CollapseTitleBar();
 
         _isFirstLaunch = !File.Exists(LauncherPaths.SettingsFile);
         _settings = SettingsService.Load();
         _session = new SettingsSession(_settings);
+
+        // A missing file, an unset value or the legacy hardcoded 4 GB default
+        // must follow the hardware policy: min(8 GB, total RAM - 2 GB).
+        if (ApplyDefaultRamIfNeeded())
+            _session.Save();
 
         BuildLayout();
         WireAutoSave();
@@ -107,7 +125,11 @@ internal sealed class MainForm : BaseDarkForm
 
         // WinForms rescales the form frame and the TableLayoutPanel-based
         // layout automatically. Point-sized fonts follow the monitor DPI, so
-        // no manual font/position adjustments are required here.
+        // text stays readable at 200% (192 DPI) instead of being shrunk by a
+        // second manual font pass. Only the manually centred overlays need a
+        // nudge, because they are positioned from pixel sizes.
+        CenterBanner();
+        PositionSecretToast();
     }
 
     private void BuildLayout()
@@ -116,13 +138,21 @@ internal sealed class MainForm : BaseDarkForm
 
         var root = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
             BackColor = Theme.Background,
             Padding = new Padding(HorizontalMargin, 10, HorizontalMargin, BottomMargin),
             Margin = Padding.Empty
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
         ContentArea.Controls.Add(root);
+
+        // Dock=Fill would pin the table to the viewport, and at very high DPI on
+        // a short monitor the fixed rows then overlap/clip at the bottom. Sizing
+        // the table manually keeps the normal look (it fills the viewport) while
+        // letting AutoScroll expose any content that no longer fits.
+        ContentArea.AutoScroll = true;
+        ContentArea.Resize += (_, _) => ResizeContentTable(root);
+        ResizeContentTable(root);
 
         int row = 0;
         void Add(Control c, RowStyle style)
@@ -474,6 +504,71 @@ internal sealed class MainForm : BaseDarkForm
 
         CenterBanner();
         PositionSecretToast();
+        AddVersionLabel();
+    }
+
+    /// <summary>
+    /// Applies the hardware-based RAM default when the player has never chosen a
+    /// value. This covers a missing user_settings.json and settings written by
+    /// older builds that stored the hardcoded 4096 MB default.
+    /// </summary>
+    private bool ApplyDefaultRamIfNeeded()
+    {
+        bool legacyDefault =
+            !_settings.RamMbUserSet &&
+            _settings.RamMb == RamPolicy.LegacyDefaultRamMb;
+
+        if (!_isFirstLaunch && _settings.RamMb > 0 && !legacyDefault)
+            return false;
+
+        int totalRamMb = SystemMemoryInfo.GetTotalPhysicalMemoryMb();
+        int defaultRamMb = RamPolicy.ComputeDefaultRamMb(totalRamMb);
+
+        if (_settings.RamMb == defaultRamMb)
+            return false;
+
+        _settings.RamMb = defaultRamMb;
+        AppLog.Write(
+            $"RAM default applied: total={totalRamMb}MB, allocated={defaultRamMb}MB");
+        return true;
+    }
+
+    /// <summary>
+    /// Small version marker pinned to the bottom-left corner of the window.
+    /// </summary>
+    private void AddVersionLabel()
+    {
+        Version? version = Assembly.GetExecutingAssembly().GetName().Version;
+
+        _versionLabel = new Label
+        {
+            AutoSize = true,
+            Text = version is null ? "v?" : $"v{version}",
+            ForeColor = Color.FromArgb(76, 200, 214), // #4CC8D6
+            BackColor = Color.Transparent,
+            Font = new Font("Segoe UI", 8f),
+            Anchor = AnchorStyles.Bottom | AnchorStyles.Left,
+            Location = new Point(6, ClientSize.Height - 20),
+            Margin = Padding.Empty
+        };
+
+        Controls.Add(_versionLabel);
+        _versionLabel.BringToFront();
+    }
+
+    /// <summary>
+    /// Keeps the content table exactly as large as the visible content area
+    /// (equivalent to Dock.Fill) but never smaller than the DPI-scaled minimum
+    /// layout height. When the minimum does not fit the monitor's working area,
+    /// Panel.AutoScroll takes over instead of clipping the last rows.
+    /// </summary>
+    private void ResizeContentTable(TableLayoutPanel table)
+    {
+        int minHeight = LogicalToDeviceUnits(ContentMinimumHeight);
+        Size viewport = ContentArea.ClientSize;
+
+        table.Width = Math.Max(1, viewport.Width);
+        table.Height = Math.Max(minHeight, viewport.Height);
     }
 
     /// <summary>
@@ -577,7 +672,17 @@ internal sealed class MainForm : BaseDarkForm
                 return;
 
             if (string.Equals(session.HWID, hwid, StringComparison.Ordinal))
+            {
+                // Backfill session_token in user_settings.json for installs that
+                // authorized before the field existed. Never logged.
+                if (!string.Equals(_settings.SessionToken, session.SessionToken, StringComparison.Ordinal))
+                {
+                    _settings.SessionToken = session.SessionToken;
+                    _session.Save();
+                }
+
                 ApplyAuthState(true, session.McNickname);
+            }
         }
         catch (Exception ex)
         {
@@ -654,6 +759,16 @@ internal sealed class MainForm : BaseDarkForm
         }
 
         SessionData? session = SessionManager.LoadSession();
+
+        // Keep the shared in-memory settings instance in sync with the token
+        // already persisted by SessionManager, so a later settings auto-save
+        // cannot overwrite it with a stale value. The token is never logged.
+        string sessionToken = session?.SessionToken ?? string.Empty;
+        if (!string.Equals(_settings.SessionToken, sessionToken, StringComparison.Ordinal))
+        {
+            _settings.SessionToken = sessionToken;
+            _session.SaveSoon();
+        }
 
         if (session == null)
         {

@@ -28,11 +28,16 @@ internal sealed class SettingsForm : BaseDarkForm
     private Panel _modsPanel = null!;
 
     private readonly List<ModToggleCard> _modCards = new();
+    private readonly List<ModRadioBinding> _radioBindings = new();
     private int _maxRamMb = 8192;
     private bool _suppressEvents;
+    private bool _suppressRadioEvents;
 
-    /// <summary>Links a rendered card to its config mod and, for radio groups, its option.</summary>
-    private sealed record ModCardContext(OptionalModInfo Mod, ModOption? Option);
+    /// <summary>Links a rendered checkbox card to its config mod.</summary>
+    private sealed record ModCardContext(OptionalModInfo Mod);
+
+    /// <summary>Links one real radio button to its config mod and option.</summary>
+    private sealed record ModRadioBinding(OptionalModInfo Mod, ModOption Option, RadioButton Button);
 
     /// <summary>
     /// True when the user pressed "Выйти из аккаунта": the session file has
@@ -449,6 +454,7 @@ internal sealed class SettingsForm : BaseDarkForm
     {
         _modsPanel.Controls.Clear();
         _modCards.Clear();
+        _radioBindings.Clear();
 
         var mods = GetOptionalMods();
 
@@ -463,25 +469,7 @@ internal sealed class SettingsForm : BaseDarkForm
         {
             if (mod.IsRadio)
             {
-                // One radio card per option; add in reverse so options keep config order.
-                foreach (var option in Enumerable.Reverse(mod.Options))
-                {
-                    var optionCard = new ModToggleCard
-                    {
-                        ModName = option.Name,
-                        Description = mod.Description,
-                        Tag = new ModCardContext(mod, option),
-                        IsRadio = true
-                    };
-
-                    optionCard.IsOn = ResolveRadioOptionState(mod, option);
-                    optionCard.ToggleRequested += (_, _) =>
-                        OnRadioOptionToggled(mod, option, optionCard);
-
-                    _modsPanel.Controls.Add(optionCard);
-                    _modCards.Add(optionCard);
-                }
-
+                _modsPanel.Controls.Add(CreateRadioGroupCard(mod));
                 continue;
             }
 
@@ -489,7 +477,7 @@ internal sealed class SettingsForm : BaseDarkForm
             {
                 ModName = mod.Name,
                 Description = mod.Description,
-                Tag = new ModCardContext(mod, null),
+                Tag = new ModCardContext(mod),
                 IsRadio = IsRadioGroup(mod, mods)
             };
 
@@ -511,6 +499,60 @@ internal sealed class SettingsForm : BaseDarkForm
             empty.AutoSize = false;
             empty.Location = new Point(0, 0);
         }
+    }
+
+    /// <summary>
+    /// Renders a "radio" mod as a dark card with the mod name, description and one
+    /// real <see cref="RadioButton"/> per configured option. All radio buttons share
+    /// the same parent panel, which gives free mutual exclusivity and AutoCheck.
+    /// </summary>
+    private Control CreateRadioGroupCard(OptionalModInfo mod)
+    {
+        var card = new ModRadioGroupCard
+        {
+            ModName = mod.Name,
+            Description = mod.Description
+        };
+
+        var bindings = new List<ModRadioBinding>();
+
+        foreach (var option in mod.Options)
+        {
+            RadioButton button = card.AddOption(option.Name);
+            var binding = new ModRadioBinding(mod, option, button);
+            bindings.Add(binding);
+            _radioBindings.Add(binding);
+
+            binding.Button.CheckedChanged += (_, _) =>
+            {
+                if (_suppressRadioEvents || !binding.Button.Checked)
+                    return;
+
+                OnRadioOptionSelected(binding.Mod, binding.Option);
+            };
+        }
+
+        string? selected = ResolveRadioSelection(mod);
+
+        RadioButton? selectedButton = bindings
+            .FirstOrDefault(binding => selected is not null &&
+                string.Equals(binding.Option.Name, selected, StringComparison.OrdinalIgnoreCase))
+            ?.Button;
+
+        if (selectedButton is not null)
+        {
+            _suppressRadioEvents = true;
+            try
+            {
+                selectedButton.Checked = true;
+            }
+            finally
+            {
+                _suppressRadioEvents = false;
+            }
+        }
+
+        return card;
     }
 
     /// <summary>
@@ -595,10 +637,7 @@ internal sealed class SettingsForm : BaseDarkForm
 
         foreach (var mod in mods.Where(mod => mod.IsRadio))
         {
-            string? selected = OptionalModsService.ResolveSelection(
-                mod,
-                _settings.GetModOption(mod.Name),
-                _buildId);
+            string? selected = ResolveRadioSelection(mod);
 
             if (selected is null)
                 continue;
@@ -621,6 +660,22 @@ internal sealed class SettingsForm : BaseDarkForm
 
         if (changed)
             _session.Save();
+    }
+
+    /// <summary>
+    /// Resolves the active option of a radio mod. A saved option name wins; a legacy
+    /// boolean value (old settings format) is ignored and the configured
+    /// <c>enabled_by_default</c> option is used instead. Without any saved value the
+    /// option currently enabled on disk is kept, otherwise the default applies.
+    /// </summary>
+    private string? ResolveRadioSelection(OptionalModInfo mod)
+    {
+        string? savedOption = _settings.GetModOption(mod.Name);
+
+        if (savedOption is null && _settings.HasModState(mod.Name))
+            return OptionalModsService.GetSavedOrDefaultOption(mod, null);
+
+        return OptionalModsService.ResolveSelection(mod, savedOption, _buildId);
     }
 
     /// <summary>
@@ -668,6 +723,7 @@ internal sealed class SettingsForm : BaseDarkForm
                 return;
 
             _settings.RamMb = _ramSlider.Value;
+            _settings.RamMbUserSet = true;
             UpdateRamReadout();
             UpdateRamWarning();
             _session.Save();
@@ -722,7 +778,6 @@ internal sealed class SettingsForm : BaseDarkForm
 
                 var otherCard = _modCards.FirstOrDefault(cardItem =>
                     cardItem.Tag is ModCardContext context &&
-                    context.Option is null &&
                     ReferenceEquals(context.Mod, other));
                 if (otherCard != null)
                     otherCard.IsOn = false;
@@ -740,13 +795,10 @@ internal sealed class SettingsForm : BaseDarkForm
     }
 
     /// <summary>
-    /// Radio group click: the clicked option becomes the only active one. Clicking
-    /// the already active option keeps it selected (radio buttons cannot be cleared).
+    /// Radio group click: the checked option becomes the only active one. Saved state
+    /// is a string (option name) and files are renamed on disk immediately.
     /// </summary>
-    private void OnRadioOptionToggled(
-        OptionalModInfo mod,
-        ModOption option,
-        ModToggleCard card)
+    private void OnRadioOptionSelected(OptionalModInfo mod, ModOption option)
     {
         _settings.SetModOption(mod.Name, option.Name);
 
@@ -759,23 +811,26 @@ internal sealed class SettingsForm : BaseDarkForm
             AppLog.Error("Optional radio mod apply", ex);
         }
 
-        // Keep every card of this radio group in sync with the single selection.
-        foreach (var groupCard in _modCards)
+        // Keep the whole group consistent even if a radio was changed programmatically.
+        _suppressRadioEvents = true;
+        try
         {
-            if (groupCard.Tag is not ModCardContext context ||
-                context.Option is null ||
-                !ReferenceEquals(context.Mod, mod))
+            foreach (var binding in _radioBindings)
             {
-                continue;
-            }
+                if (!ReferenceEquals(binding.Mod, mod))
+                    continue;
 
-            groupCard.IsOn = string.Equals(
-                context.Option.Name,
-                option.Name,
-                StringComparison.OrdinalIgnoreCase);
+                binding.Button.Checked = string.Equals(
+                    binding.Option.Name,
+                    option.Name,
+                    StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        finally
+        {
+            _suppressRadioEvents = false;
         }
 
-        card.IsOn = true;
         _session.Save();
     }
 
@@ -838,9 +893,29 @@ internal sealed class SettingsForm : BaseDarkForm
             if (card.Tag is not ModCardContext context)
                 continue;
 
-            card.IsOn = context.Option is not null
-                ? ResolveRadioOptionState(context.Mod, context.Option)
-                : ResolveModState(context.Mod);
+            card.IsOn = ResolveModState(context.Mod);
+        }
+
+        _suppressRadioEvents = true;
+        try
+        {
+            var selections = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var binding in _radioBindings)
+            {
+                if (!selections.TryGetValue(binding.Mod.Name, out string? selected))
+                {
+                    selected = ResolveRadioSelection(binding.Mod);
+                    selections[binding.Mod.Name] = selected;
+                }
+
+                binding.Button.Checked = selected is not null &&
+                    string.Equals(binding.Option.Name, selected, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        finally
+        {
+            _suppressRadioEvents = false;
         }
     }
 
@@ -858,18 +933,6 @@ internal sealed class SettingsForm : BaseDarkForm
             return saved;
 
         return mod.EnabledByDefault;
-    }
-
-    /// <summary>True when this option is the single active choice of its radio group.</summary>
-    private bool ResolveRadioOptionState(OptionalModInfo mod, ModOption option)
-    {
-        string? selected = OptionalModsService.ResolveSelection(
-            mod,
-            _settings.GetModOption(mod.Name),
-            _buildId);
-
-        return selected is not null &&
-               string.Equals(selected, option.Name, StringComparison.OrdinalIgnoreCase);
     }
 
     // ------------------------------------------------------------- helpers
@@ -927,48 +990,36 @@ internal sealed class SettingsForm : BaseDarkForm
         if (IsDisposed)
             return;
 
-        _maxRamMb = ComputeMaxRamMb(totalRamMb);
+        _maxRamMb = RamPolicy.ComputeMaxRamMb(totalRamMb);
 
         _suppressEvents = true;
-        _ramSlider.Minimum = 1024;
+        _ramSlider.Minimum = RamPolicy.MinimumRamMb;
         _ramSlider.Maximum = _maxRamMb;
-        _ramSlider.Step = 512;
+        _ramSlider.Step = RamPolicy.RamStepMb;
 
-        int initial;
-        if (_isFirstLaunch)
-        {
-            // Smart default: 8192 MB on machines with >= 12 GB, otherwise 6144 MB,
-            // never above the maximum available for this PC.
-            initial = totalRamMb >= 12288 ? 8192 : 6144;
-        }
-        else
-        {
-            initial = _settings.RamMb > 0 ? _settings.RamMb : 6144;
-        }
+        // Default = min(8 GB, total RAM - 2 GB). A hardware-based default is
+        // used when the value was never chosen, including old settings files
+        // that still contain the legacy 4 GB default.
+        bool needsDefault =
+            !_settings.RamMbUserSet &&
+            (_isFirstLaunch ||
+             _settings.RamMb <= 0 ||
+             _settings.RamMb == RamPolicy.LegacyDefaultRamMb);
 
-        _ramSlider.Value = Math.Clamp(NormalizeRam(initial), 1024, _maxRamMb);
+        int initial = needsDefault
+            ? RamPolicy.ComputeDefaultRamMb(totalRamMb)
+            : _settings.RamMb;
+
+        _ramSlider.Value = Math.Clamp(
+            RamPolicy.NormalizeRamMb(initial),
+            RamPolicy.MinimumRamMb,
+            _maxRamMb);
         _suppressEvents = false;
 
         _settings.RamMb = _ramSlider.Value;
         UpdateRamReadout();
         UpdateRamWarning();
         _session.Save();
-    }
-
-    private static int ComputeMaxRamMb(int totalMb)
-    {
-        if (totalMb <= 0)
-            return 8192;
-
-        int max = Math.Max(1024, totalMb - 2048);
-        max = (max / 512) * 512;
-        return Math.Max(1024, max);
-    }
-
-    private static int NormalizeRam(int ramMb)
-    {
-        int value = (int)(Math.Round(ramMb / 512d) * 512d);
-        return Math.Max(1024, value);
     }
 
     private void BrowseForJava()

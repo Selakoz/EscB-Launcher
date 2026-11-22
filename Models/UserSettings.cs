@@ -9,10 +9,30 @@ namespace EscapeBook.Models;
 internal sealed class UserSettings
 {
     public string Nickname { get; set; } = string.Empty;
-    public int RamMb { get; set; } = 4096;
+
+    /// <summary>
+    /// Allocated RAM in MB. 0 means "not chosen yet": the launcher computes the
+    /// hardware-based default (8 GB cap, total RAM minus 2 GB).
+    /// </summary>
+    public int RamMb { get; set; }
+
+    /// <summary>
+    /// True once the player moved the RAM slider. Keeps an explicitly chosen
+    /// value (including exactly 4 GB) from being replaced by the auto default.
+    /// </summary>
+    public bool RamMbUserSet { get; set; }
+
     public string CustomJvmArgs { get; set; } = string.Empty;
     public string JavaPath { get; set; } = string.Empty;
     public string SelectedBuildId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Session token returned by the auth worker after a successful Telegram or
+    /// Discord login. Persisted so external tools (skin upload page) can read
+    /// it. Never logged or shown in the UI. Empty when logged out.
+    /// </summary>
+    [JsonPropertyName("session_token")]
+    public string SessionToken { get; set; } = string.Empty;
 
     /// <summary>
     /// Per-mod state chosen by the player (key = optional_mods.name).
@@ -50,6 +70,9 @@ internal sealed class UserSettings
 
         return value.ValueKind == JsonValueKind.String ? value.GetString() : null;
     }
+
+    /// <summary>True when any value (boolean or string) is stored for this mod.</summary>
+    public bool HasModState(string name) => OptionalModStates.ContainsKey(name);
 
     public void SetModEnabled(string name, bool enabled) =>
         OptionalModStates[name] = JsonSerializer.SerializeToElement(enabled);
@@ -93,9 +116,11 @@ internal sealed class UserSettings
         {
             Nickname = Nickname,
             RamMb = RamMb,
+            RamMbUserSet = RamMbUserSet,
             CustomJvmArgs = CustomJvmArgs,
             JavaPath = JavaPath,
             SelectedBuildId = SelectedBuildId,
+            SessionToken = SessionToken,
             AppliedJvmPresetVersion = AppliedJvmPresetVersion,
             OptionalModStates = new Dictionary<string, JsonElement>(OptionalModStates)
         };

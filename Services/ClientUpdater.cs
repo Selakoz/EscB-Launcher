@@ -20,6 +20,21 @@ internal sealed class ClientUpdater
         IProgress<LaunchProgress> progress,
         CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(build.ClientZipUrl))
+        {
+            throw new InvalidOperationException(
+                "Ошибка: не удалось получить URL сборки из config.json — " +
+                $"поле client_zip_url пусто для сборки \"{build.Id}\".");
+        }
+
+        if (!Uri.TryCreate(build.ClientZipUrl, UriKind.Absolute, out Uri? clientUri) ||
+            (clientUri.Scheme != Uri.UriSchemeHttp && clientUri.Scheme != Uri.UriSchemeHttps))
+        {
+            throw new InvalidOperationException(
+                "Ошибка: не удалось получить URL сборки из config.json — " +
+                $"некорректный client_zip_url для сборки \"{build.Id}\": {build.ClientZipUrl}");
+        }
+
         string instanceDirectory = LauncherPaths.GetInstancePath(build.Id);
         bool instanceExisted = Directory.Exists(instanceDirectory);
         Directory.CreateDirectory(instanceDirectory);
@@ -38,13 +53,6 @@ internal sealed class ClientUpdater
         if (!needsUpdate)
         {
             progress.Report(new LaunchProgress(8, $"Сборка «{build.Name}» актуальна"));
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(build.ClientZipUrl))
-        {
-            progress.Report(new LaunchProgress(8, "client_zip_url не задан — обновление сборки пропущено"));
-            AppLog.Write($"client_zip_url is empty for build {build.Id}, skipping client update");
             return;
         }
 
