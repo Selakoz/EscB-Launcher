@@ -27,6 +27,12 @@ internal sealed class SessionData
 /// </summary>
 internal static class SessionManager
 {
+    /// <summary>
+    /// Raised after a session is saved or cleared, so UI (main window status
+    /// indicator) can react immediately to auth changes.
+    /// </summary>
+    public static event EventHandler? AuthChanged;
+
     private static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,
@@ -51,6 +57,7 @@ internal static class SessionManager
             string tempPath = LauncherPaths.AuthSessionFile + ".tmp";
             File.WriteAllText(tempPath, json);
             File.Move(tempPath, LauncherPaths.AuthSessionFile, overwrite: true);
+            RaiseAuthChanged();
         }
         catch (Exception ex)
         {
@@ -91,14 +98,36 @@ internal static class SessionManager
 
     public static void ClearSession()
     {
+        bool cleared = false;
+
         try
         {
             if (File.Exists(LauncherPaths.AuthSessionFile))
                 File.Delete(LauncherPaths.AuthSessionFile);
+
+            cleared = true;
         }
         catch (Exception ex)
         {
             AppLog.Error("Auth session clear", ex);
+        }
+
+        // Only refresh the UI when the session is actually gone; otherwise the
+        // handler would load the old file and re-authorize the window.
+        if (cleared)
+            RaiseAuthChanged();
+    }
+
+    private static void RaiseAuthChanged()
+    {
+        try
+        {
+            AuthChanged?.Invoke(null, EventArgs.Empty);
+        }
+        catch (Exception ex)
+        {
+            // A UI handler must never break session persistence/logout.
+            AppLog.Error("Auth state event", ex);
         }
     }
 }

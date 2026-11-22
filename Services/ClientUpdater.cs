@@ -16,6 +16,7 @@ internal sealed class ClientUpdater
         BuildInfo build,
         IReadOnlyList<OptionalModInfo> optionalMods,
         IReadOnlyDictionary<string, bool>? playerModStates,
+        IReadOnlyDictionary<string, string>? playerModChoices,
         IProgress<LaunchProgress> progress,
         CancellationToken cancellationToken)
     {
@@ -140,6 +141,15 @@ internal sealed class ClientUpdater
 
             foreach (var mod in optionalMods)
             {
+                if (mod.IsRadio)
+                {
+                    string? savedChoice = playerModChoices?.GetValueOrDefault(mod.Name);
+
+                    string? selected = OptionalModsService.GetSavedOrDefaultOption(mod, savedChoice);
+                    changed += OptionalModsService.ApplyRadioSelection(mod, selected, build.Id);
+                    continue;
+                }
+
                 bool desired = playerModStates is not null &&
                                playerModStates.TryGetValue(mod.Name, out bool playerState)
                     ? playerState

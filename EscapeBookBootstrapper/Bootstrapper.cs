@@ -12,6 +12,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Microsoft.Win32;
 using Newtonsoft.Json.Linq;
 
 namespace EscapeBookBootstrapper
@@ -43,6 +44,14 @@ namespace EscapeBookBootstrapper
         private const string ShortcutDescription = "EscB Client — запуск и обновление";
 
         private const int CopyBufferSize = 81920;
+
+        // Версия текста лицензионного соглашения. При изменении текста
+        // увеличьте версию, чтобы соглашение показалось повторно.
+        public const string EulaVersion = "1.0";
+
+        private const string EulaFlagFileName = "eula_accepted.flag";
+        private const string EulaRegistryPath = @"Software\EscB";
+        private const string EulaRegistryValue = "EulaAccepted";
 
         private static readonly string LatestReleaseApiUrl =
             "https://api.github.com/repos/" + GitHubOwner + "/" + GitHubRepo + "/releases/latest";
@@ -78,9 +87,11 @@ namespace EscapeBookBootstrapper
             get { return Path.Combine(LauncherDirectory, UpdaterExecutableName); }
         }
 
+        // Версия лаунчера. Обновлятор пишет тот же файл, поэтому загрузчик
+        // и ярлык используют единый маркер установленной версии клиента.
         public static string VersionFile
         {
-            get { return Path.Combine(LauncherDirectory, ".bootstrapper_version"); }
+            get { return Path.Combine(LauncherDirectory, ".client_version"); }
         }
 
         public static string LogFile
@@ -582,8 +593,11 @@ namespace EscapeBookBootstrapper
                 "user_settings.json",
                 ".launcher_config.json",
                 UpdaterExecutableName,
+                "EscapeBookBootstrapper.exe",
                 "updater.log",
+                ".client_version",
                 ".bootstrapper_version",
+                ".updater_version",
                 "bootstrapper.log"
             };
 
@@ -949,6 +963,115 @@ namespace EscapeBookBootstrapper
                     !string.IsNullOrEmpty(entry.Name) &&
                     string.Equals(entry.Name, MainExecutableName, StringComparison.OrdinalIgnoreCase));
             }
+        }
+
+        // ---------------------------------------------------------------------- eula
+
+        /// <summary>
+        /// Путь к флагу принятия EULA: %LOCALAPPDATA%\EscB\eula_accepted.flag.
+        /// </summary>
+        private static string EulaFlagFile
+        {
+            get
+            {
+                string localAppData = Environment.GetFolderPath(
+                    Environment.SpecialFolder.LocalApplicationData);
+                return Path.Combine(localAppData, "EscB", EulaFlagFileName);
+            }
+        }
+
+        /// <summary>
+        /// Проверяет, принята ли текущая версия EULA. Сначала читается файл
+        /// флага, затем (если файла нет) — резервная запись в реестре.
+        /// </summary>
+        public static bool IsEulaAccepted()
+        {
+            try
+            {
+                if (File.Exists(EulaFlagFile))
+                {
+                    string content = File.ReadAllText(EulaFlagFile).Trim();
+                    return IsCurrentEulaVersion(content);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("Не удалось прочитать флаг EULA: " + ex.Message);
+            }
+
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(EulaRegistryPath))
+                {
+                    if (key == null)
+                        return false;
+
+                    string content = key.GetValue(EulaRegistryValue) as string;
+                    return IsCurrentEulaVersion(content);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("Не удалось прочитать флаг EULA из реестра: " + ex.Message);
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Сохраняет принятие текущей версии EULA. Основной путь — файл в
+        /// %LOCALAPPDATA%; если запись невозможна, используется HKCU-реестр.
+        /// </summary>
+        public static void SaveEulaAcceptance()
+        {
+            string content = EulaVersion + "|" + DateTime.UtcNow.ToString("o");
+
+            try
+            {
+                string directory = Path.GetDirectoryName(EulaFlagFile);
+                if (!string.IsNullOrEmpty(directory))
+                    Directory.CreateDirectory(directory);
+
+                File.WriteAllText(EulaFlagFile, content);
+                return;
+            }
+            catch (Exception ex)
+            {
+                Log("Не удалось сохранить флаг EULA в файл: " + ex.Message);
+            }
+
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(EulaRegistryPath))
+                {
+                    if (key != null)
+                    {
+                        key.SetValue(EulaRegistryValue, content, RegistryValueKind.String);
+                        Log("Флаг EULA сохранён в реестре.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("Не удалось сохранить флаг EULA в реестр: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Формат флага: "версия|ISO-время". Старые версии соглашения
+        /// требуют повторного принятия.
+        /// </summary>
+        private static bool IsCurrentEulaVersion(string content)
+        {
+            if (string.IsNullOrWhiteSpace(content))
+                return false;
+
+            int separator = content.IndexOf('|');
+            string version = separator >= 0
+                ? content.Substring(0, separator).Trim()
+                : content.Trim();
+
+            return string.Equals(version, EulaVersion, StringComparison.Ordinal);
         }
 
         // -------------------------------------------------------------- version/store

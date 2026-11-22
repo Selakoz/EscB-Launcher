@@ -13,6 +13,15 @@ CREATE TABLE IF NOT EXISTS devices (
     PRIMARY KEY (mc_nickname, hwid),
     FOREIGN KEY (mc_nickname) REFERENCES players(mc_nickname) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS sessions (
+    token       TEXT PRIMARY KEY,
+    mc_nickname TEXT NOT NULL,
+    created_at  INTEGER DEFAULT (strftime('%s','now')),
+    expires_at  INTEGER NOT NULL,
+    FOREIGN KEY (mc_nickname) REFERENCES players(mc_nickname) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_nickname ON sessions(mc_nickname);
+
 CREATE TABLE IF NOT EXISTS otp_codes (
     mc_nickname TEXT PRIMARY KEY,
     code        TEXT NOT NULL,

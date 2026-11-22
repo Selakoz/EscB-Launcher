@@ -136,11 +136,63 @@ internal sealed class LauncherConfig
                 mod.Name = mod.Name?.Trim() ?? string.Empty;
                 mod.Description = mod.Description?.Trim() ?? string.Empty;
                 mod.Group = mod.Group?.Trim() ?? string.Empty;
+
+                // Missing or unknown "type" keeps the classic checkbox behaviour.
+                mod.Type = string.Equals(mod.Type?.Trim(), "radio", StringComparison.OrdinalIgnoreCase)
+                    ? "radio"
+                    : "checkbox";
+
+                var options = new List<ModOption>();
+
+                if (mod.Options != null)
+                {
+                    foreach (var option in mod.Options)
+                    {
+                        if (option == null)
+                            continue;
+
+                        option.Name = option.Name?.Trim() ?? string.Empty;
+                        option.FilePrefixes = (option.FilePrefixes ?? new List<string>())
+                            .Where(prefix => !string.IsNullOrWhiteSpace(prefix))
+                            .Select(prefix => prefix.Trim())
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+
+                        if (string.IsNullOrWhiteSpace(option.Name) || option.FilePrefixes.Count == 0)
+                            continue;
+
+                        if (options.Any(existing =>
+                                string.Equals(existing.Name, option.Name, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            continue;
+                        }
+
+                        options.Add(option);
+                    }
+                }
+
+                mod.Options = options;
+
+                // An empty option list (or a single option) cannot form a radio
+                // group, so fall back to a normal checkbox.
+                if (mod.Type == "radio" && options.Count < 2)
+                    mod.Type = "checkbox";
+
                 mod.FilePrefixes = (mod.FilePrefixes ?? new List<string>())
                     .Where(prefix => !string.IsNullOrWhiteSpace(prefix))
                     .Select(prefix => prefix.Trim())
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
+
+                // Radio mods declare prefixes per option; keep the aggregate list
+                // populated for generic file helpers.
+                if (mod.IsRadio && mod.FilePrefixes.Count == 0)
+                {
+                    mod.FilePrefixes = options
+                        .SelectMany(option => option.FilePrefixes)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                }
 
                 if (string.IsNullOrWhiteSpace(mod.Name) || mod.FilePrefixes.Count == 0)
                     continue;

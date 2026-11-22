@@ -10,7 +10,7 @@ internal sealed class ConfigService
     /// Например: https://raw.githubusercontent.com/your-account/your-repo/main/config.json
     /// </summary>
     public const string CONFIG_URL =
-        "https://raw.githubusercontent.com/your-account/your-repo/main/config.json";
+        "https://raw.githubusercontent.com/Selakoz/EscB-Launcher/refs/heads/main/config.json";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

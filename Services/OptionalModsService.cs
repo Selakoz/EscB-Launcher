@@ -12,45 +12,92 @@ internal static class OptionalModsService
 {
     public const string DisabledSuffix = ".disabled";
 
-    public static OptionalModState GetState(OptionalModInfo mod, string buildId)
+    public static OptionalModState GetState(OptionalModInfo mod, string buildId) =>
+        GetPrefixState(mod.FilePrefixes, buildId);
+
+    public static OptionalModState GetOptionState(ModOption option, string buildId) =>
+        GetPrefixState(option.FilePrefixes, buildId);
+
+    private static OptionalModState GetPrefixState(
+        IReadOnlyList<string> prefixes,
+        string buildId)
     {
-        List<string> files = GetMatchingFiles(mod, buildId);
+        List<string> files = GetMatchingFiles(prefixes, buildId);
         bool hasFiles = files.Count > 0;
         bool enabled = files.Any(file => !IsDisabled(file));
         return new OptionalModState(hasFiles, enabled);
     }
 
-    public static int SetEnabled(OptionalModInfo mod, string buildId, bool enabled)
+    public static int SetEnabled(OptionalModInfo mod, string buildId, bool enabled) =>
+        SetPrefixesEnabled(mod.FilePrefixes, buildId, enabled);
+
+    /// <summary>
+    /// Applies a radio group choice: files of the selected option are enabled and
+    /// every other option is disabled with the <c>.disabled</c> suffix.
+    /// </summary>
+    public static int ApplyRadioSelection(
+        OptionalModInfo mod,
+        string? selectedOption,
+        string buildId)
     {
         int changed = 0;
 
-        foreach (string file in GetMatchingFiles(mod, buildId))
+        foreach (var option in mod.Options)
         {
-            bool disabled = IsDisabled(file);
+            bool enabled =
+                !string.IsNullOrWhiteSpace(selectedOption) &&
+                string.Equals(option.Name, selectedOption, StringComparison.OrdinalIgnoreCase);
 
-            if (enabled && disabled)
-            {
-                string target = file[..^DisabledSuffix.Length];
-                if (File.Exists(target))
-                    File.Delete(file);
-                else
-                    File.Move(file, target);
-
-                changed++;
-            }
-            else if (!enabled && !disabled)
-            {
-                string target = file + DisabledSuffix;
-                if (File.Exists(target))
-                    File.Delete(file);
-                else
-                    File.Move(file, target);
-
-                changed++;
-            }
+            changed += SetPrefixesEnabled(option.FilePrefixes, buildId, enabled);
         }
 
         return changed;
+    }
+
+    /// <summary>
+    /// Saved radio choice when it still matches a configured option, otherwise the
+    /// first option marked <c>enabled_by_default</c>, otherwise the first option.
+    /// </summary>
+    public static string? GetSavedOrDefaultOption(OptionalModInfo mod, string? savedOption)
+    {
+        if (mod.Options.Count == 0)
+            return null;
+
+        if (!string.IsNullOrWhiteSpace(savedOption) &&
+            mod.Options.Any(option =>
+                string.Equals(option.Name, savedOption, StringComparison.OrdinalIgnoreCase)))
+        {
+            return savedOption;
+        }
+
+        return mod.Options.FirstOrDefault(option => option.EnabledByDefault)?.Name
+               ?? mod.Options[0].Name;
+    }
+
+    /// <summary>
+    /// Resolves the active radio option for the settings UI: the saved preference
+    /// wins, then whichever option currently has enabled files on disk, then the
+    /// configured default.
+    /// </summary>
+    public static string? ResolveSelection(
+        OptionalModInfo mod,
+        string? savedOption,
+        string buildId)
+    {
+        if (mod.Options.Count == 0)
+            return null;
+
+        if (!string.IsNullOrWhiteSpace(savedOption) &&
+            mod.Options.Any(option =>
+                string.Equals(option.Name, savedOption, StringComparison.OrdinalIgnoreCase)))
+        {
+            return savedOption;
+        }
+
+        ModOption? enabledOption = mod.Options.FirstOrDefault(option =>
+            GetOptionState(option, buildId) is { HasFiles: true, Enabled: true });
+
+        return enabledOption?.Name ?? GetSavedOrDefaultOption(mod, null);
     }
 
     /// <summary>
@@ -64,13 +111,27 @@ internal static class OptionalModsService
 
         foreach (var mod in optionalMods)
         {
+            if (mod.IsRadio)
+            {
+                changed += ApplyRadioSelection(
+                    mod,
+                    GetSavedOrDefaultOption(mod, null),
+                    buildId);
+                continue;
+            }
+
             changed += SetEnabled(mod, buildId, mod.EnabledByDefault);
         }
 
         return changed;
     }
 
-    public static List<string> GetMatchingFiles(OptionalModInfo mod, string buildId)
+    public static List<string> GetMatchingFiles(OptionalModInfo mod, string buildId) =>
+        GetMatchingFiles(mod.FilePrefixes, buildId);
+
+    private static List<string> GetMatchingFiles(
+        IReadOnlyList<string> prefixes,
+        string buildId)
     {
         string modsDirectory = LauncherPaths.GetModsPath(buildId);
         if (!Directory.Exists(modsDirectory))
@@ -80,7 +141,7 @@ internal static class OptionalModsService
         {
             return Directory
                 .EnumerateFiles(modsDirectory, "*", SearchOption.TopDirectoryOnly)
-                .Where(file => mod.FilePrefixes.Any(prefix =>
+                .Where(file => prefixes.Any(prefix =>
                     Path.GetFileName(file).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
                 .ToList();
         }
@@ -126,6 +187,18 @@ internal static class OptionalModsService
 
         foreach (var mod in optionalMods)
         {
+            if (mod.IsRadio)
+            {
+                foreach (var option in mod.Options)
+                {
+                    OptionalModState optionState = GetOptionState(option, buildId);
+                    if (optionState.HasFiles && !optionState.Enabled)
+                        disabledPrefixes.AddRange(option.FilePrefixes);
+                }
+
+                continue;
+            }
+
             OptionalModState state = GetState(mod, buildId);
             if (state.HasFiles && !state.Enabled)
                 disabledPrefixes.AddRange(mod.FilePrefixes);
@@ -176,6 +249,42 @@ internal static class OptionalModsService
         catch (Exception ex)
         {
             AppLog.Error("Restore disabled mods", ex);
+        }
+
+        return changed;
+    }
+
+    private static int SetPrefixesEnabled(
+        IReadOnlyList<string> prefixes,
+        string buildId,
+        bool enabled)
+    {
+        int changed = 0;
+
+        foreach (string file in GetMatchingFiles(prefixes, buildId))
+        {
+            bool disabled = IsDisabled(file);
+
+            if (enabled && disabled)
+            {
+                string target = file[..^DisabledSuffix.Length];
+                if (File.Exists(target))
+                    File.Delete(file);
+                else
+                    File.Move(file, target);
+
+                changed++;
+            }
+            else if (!enabled && !disabled)
+            {
+                string target = file + DisabledSuffix;
+                if (File.Exists(target))
+                    File.Delete(file);
+                else
+                    File.Move(file, target);
+
+                changed++;
+            }
         }
 
         return changed;

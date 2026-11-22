@@ -36,6 +36,14 @@
     <Reference Include="System.Windows.Forms" />
   </ItemGroup>
 
+  <!-- Текст EULA вшивается в EXE, чтобы соглашение было доступно при первом
+       запуске без сети. LogicalName используется для чтения из кода. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\EULA.txt">
+      <LogicalName>EULA.txt</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <!-- Fody + Costura вшивают управляемые зависимости (Newtonsoft.Json) внутрь
        EscapeBookBootstrapper.exe как ресурсы: на выходе один файл. -->
   <ItemGroup>

@@ -31,6 +31,9 @@ internal sealed class SettingsForm : BaseDarkForm
     private int _maxRamMb = 8192;
     private bool _suppressEvents;
 
+    /// <summary>Links a rendered card to its config mod and, for radio groups, its option.</summary>
+    private sealed record ModCardContext(OptionalModInfo Mod, ModOption? Option);
+
     /// <summary>
     /// True when the user pressed "Выйти из аккаунта": the session file has
     /// been deleted and MainForm must revert to the unauthorized state.
@@ -449,19 +452,44 @@ internal sealed class SettingsForm : BaseDarkForm
 
         var mods = GetOptionalMods();
 
-        // Resolve conflicting radio-group choices before rendering so the UI and the
-        // files on disk always show a single active mod per group.
+        // Resolve conflicting choices before rendering so the UI and the files on
+        // disk always show exactly one active option per radio group.
         ApplyGroupExclusivity(mods);
+        ApplyRadioSelections(mods);
 
         // Dock.Top places the last added control at the very top, so add in reverse
         // to keep the visual order identical to the config order.
         foreach (var mod in Enumerable.Reverse(mods))
         {
+            if (mod.IsRadio)
+            {
+                // One radio card per option; add in reverse so options keep config order.
+                foreach (var option in Enumerable.Reverse(mod.Options))
+                {
+                    var optionCard = new ModToggleCard
+                    {
+                        ModName = option.Name,
+                        Description = mod.Description,
+                        Tag = new ModCardContext(mod, option),
+                        IsRadio = true
+                    };
+
+                    optionCard.IsOn = ResolveRadioOptionState(mod, option);
+                    optionCard.ToggleRequested += (_, _) =>
+                        OnRadioOptionToggled(mod, option, optionCard);
+
+                    _modsPanel.Controls.Add(optionCard);
+                    _modCards.Add(optionCard);
+                }
+
+                continue;
+            }
+
             var card = new ModToggleCard
             {
                 ModName = mod.Name,
                 Description = mod.Description,
-                Tag = mod,
+                Tag = new ModCardContext(mod, null),
                 IsRadio = IsRadioGroup(mod, mods)
             };
 
@@ -491,6 +519,9 @@ internal sealed class SettingsForm : BaseDarkForm
     /// </summary>
     private static bool IsRadioGroup(OptionalModInfo mod, IReadOnlyList<OptionalModInfo> mods)
     {
+        if (mod.IsRadio)
+            return false;
+
         if (string.IsNullOrWhiteSpace(mod.Group))
             return false;
 
@@ -513,7 +544,10 @@ internal sealed class SettingsForm : BaseDarkForm
 
         foreach (var group in groups)
         {
-            var members = group.ToList();
+            var members = group
+                .Where(mod => !mod.IsRadio)
+                .ToList();
+
             if (members.Count < 2)
                 continue;
 
@@ -532,7 +566,7 @@ internal sealed class SettingsForm : BaseDarkForm
                 if (state.Enabled == desired)
                     continue;
 
-                _settings.OptionalModStates[state.Mod.Name] = desired;
+                _settings.SetModEnabled(state.Mod.Name, desired);
 
                 try
                 {
@@ -544,6 +578,44 @@ internal sealed class SettingsForm : BaseDarkForm
                 }
 
                 changed = true;
+            }
+        }
+
+        if (changed)
+            _session.Save();
+    }
+
+    /// <summary>
+    /// Makes sure radio mods have exactly one active option, applying the resolved
+    /// choice to disk (other options get the <c>.disabled</c> suffix).
+    /// </summary>
+    private void ApplyRadioSelections(IReadOnlyList<OptionalModInfo> mods)
+    {
+        bool changed = false;
+
+        foreach (var mod in mods.Where(mod => mod.IsRadio))
+        {
+            string? selected = OptionalModsService.ResolveSelection(
+                mod,
+                _settings.GetModOption(mod.Name),
+                _buildId);
+
+            if (selected is null)
+                continue;
+
+            if (!string.Equals(_settings.GetModOption(mod.Name), selected, StringComparison.OrdinalIgnoreCase))
+            {
+                _settings.SetModOption(mod.Name, selected);
+                changed = true;
+            }
+
+            try
+            {
+                OptionalModsService.ApplyRadioSelection(mod, selected, _buildId);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("Optional radio mod apply", ex);
             }
         }
 
@@ -645,23 +717,65 @@ internal sealed class SettingsForm : BaseDarkForm
                     continue;
                 }
 
-                _settings.OptionalModStates[other.Name] = false;
+                _settings.SetModEnabled(other.Name, false);
                 ApplyModToDisk(other, false);
 
                 var otherCard = _modCards.FirstOrDefault(cardItem =>
-                    ReferenceEquals(cardItem.Tag, other));
+                    cardItem.Tag is ModCardContext context &&
+                    context.Option is null &&
+                    ReferenceEquals(context.Mod, other));
                 if (otherCard != null)
                     otherCard.IsOn = false;
             }
         }
 
         // Persist the preference (used when the build is not downloaded yet).
-        _settings.OptionalModStates[mod.Name] = enabled;
+        _settings.SetModEnabled(mod.Name, enabled);
 
         // Apply immediately to the active instance mods folder.
         ApplyModToDisk(mod, enabled);
         card.IsOn = enabled;
 
+        _session.Save();
+    }
+
+    /// <summary>
+    /// Radio group click: the clicked option becomes the only active one. Clicking
+    /// the already active option keeps it selected (radio buttons cannot be cleared).
+    /// </summary>
+    private void OnRadioOptionToggled(
+        OptionalModInfo mod,
+        ModOption option,
+        ModToggleCard card)
+    {
+        _settings.SetModOption(mod.Name, option.Name);
+
+        try
+        {
+            OptionalModsService.ApplyRadioSelection(mod, option.Name, _buildId);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Optional radio mod apply", ex);
+        }
+
+        // Keep every card of this radio group in sync with the single selection.
+        foreach (var groupCard in _modCards)
+        {
+            if (groupCard.Tag is not ModCardContext context ||
+                context.Option is null ||
+                !ReferenceEquals(context.Mod, mod))
+            {
+                continue;
+            }
+
+            groupCard.IsOn = string.Equals(
+                context.Option.Name,
+                option.Name,
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        card.IsOn = true;
         _session.Save();
     }
 
@@ -685,9 +799,21 @@ internal sealed class SettingsForm : BaseDarkForm
 
             foreach (var mod in mods)
             {
+                if (mod.IsRadio)
+                {
+                    string? defaultOption = OptionalModsService.GetSavedOrDefaultOption(mod, null);
+                    if (defaultOption is null)
+                        _settings.RemoveModState(mod.Name);
+                    else
+                        _settings.SetModOption(mod.Name, defaultOption);
+
+                    OptionalModsService.ApplyRadioSelection(mod, defaultOption, _buildId);
+                    continue;
+                }
+
                 bool desired = mod.EnabledByDefault;
 
-                _settings.OptionalModStates[mod.Name] = desired;
+                _settings.SetModEnabled(mod.Name, desired);
                 OptionalModsService.SetEnabled(mod, _buildId, desired);
             }
 
@@ -709,8 +835,12 @@ internal sealed class SettingsForm : BaseDarkForm
     {
         foreach (var card in _modCards)
         {
-            if (card.Tag is OptionalModInfo mod)
-                card.IsOn = ResolveModState(mod);
+            if (card.Tag is not ModCardContext context)
+                continue;
+
+            card.IsOn = context.Option is not null
+                ? ResolveRadioOptionState(context.Mod, context.Option)
+                : ResolveModState(context.Mod);
         }
     }
 
@@ -724,10 +854,22 @@ internal sealed class SettingsForm : BaseDarkForm
         if (state.HasFiles)
             return state.Enabled;
 
-        if (_settings.OptionalModStates.TryGetValue(mod.Name, out bool saved))
+        if (_settings.GetModEnabled(mod.Name) is bool saved)
             return saved;
 
         return mod.EnabledByDefault;
+    }
+
+    /// <summary>True when this option is the single active choice of its radio group.</summary>
+    private bool ResolveRadioOptionState(OptionalModInfo mod, ModOption option)
+    {
+        string? selected = OptionalModsService.ResolveSelection(
+            mod,
+            _settings.GetModOption(mod.Name),
+            _buildId);
+
+        return selected is not null &&
+               string.Equals(selected, option.Name, StringComparison.OrdinalIgnoreCase);
     }
 
     // ------------------------------------------------------------- helpers

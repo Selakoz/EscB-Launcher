@@ -1,0 +1,10 @@
+{
+  "enable": true,
+  "loadlist": [
+    {
+      "name": "EscapeBook",
+      "type": "CustomSkinAPI",
+      "root": "https://escapebook.site/api/skins/"
+    }
+  ]
+}

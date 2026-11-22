@@ -54,6 +54,10 @@ interface RateLimitRow {
   window_end: number;
 }
 
+// Session lifetime: 30 days. Session tokens are stored in the `sessions`
+// table so they can be validated later (GET /auth/validate).
+const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+
 const NICKNAME_RE = /^[A-Za-z0-9_]{3,16}$/;
 // Numeric strings for Snowflake IDs (5-25 digits): validated as strings,
 // never converted to Number (precision loss above 2^53).
@@ -65,6 +69,7 @@ const ROUTES: Record<string, string> = {
   "/auth/confirm-otp": "POST",
   "/auth/register-device": "POST",
   "/auth/links": "POST",
+  "/auth/validate": "GET",
   "/auth/request-otp-discord": "POST",
   "/admin/ban": "POST",
   "/admin/unban": "POST",
@@ -75,7 +80,7 @@ const ROUTES: Record<string, string> = {
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
 function nowSeconds(): number {
@@ -504,6 +509,13 @@ async function handleConfirmOTP(request: Request, env: Env): Promise<Response> {
 
   const sessionToken = generateSessionToken();
 
+  // Persist the session so it can be validated by GET /auth/validate.
+  await env.DB.prepare(
+    "INSERT INTO sessions (token, mc_nickname, created_at, expires_at) VALUES (?, ?, ?, ?)"
+  )
+    .bind(sessionToken, mc_nickname, now, now + SESSION_TTL_SECONDS)
+    .run();
+
   // The OTP is single-use: delete it right after a successful confirmation.
   await env.DB.prepare("DELETE FROM otp_codes WHERE mc_nickname = ?")
     .bind(mc_nickname)
@@ -589,6 +601,40 @@ async function handleLinks(request: Request, env: Env): Promise<Response> {
     bot_username:
       typeof env.TG_BOT_USERNAME === "string" ? env.TG_BOT_USERNAME : "",
   });
+}
+
+// GET /auth/validate — Authorization: Bearer <session_token>
+// Used by other workers (e.g. skins uploads) to verify a session without
+// touching the OTP flow. Returns {valid: true, nickname} or 401.
+async function handleValidate(request: Request, env: Env): Promise<Response> {
+  let token = "";
+  const header = request.headers.get("Authorization") || "";
+  if (header.toLowerCase().startsWith("bearer ")) {
+    token = header.slice(7).trim();
+  }
+  if (token.length === 0) {
+    return json({ valid: false, error: "invalid_or_missing_token" }, 401);
+  }
+
+  try {
+    const session = await env.DB.prepare(
+      "SELECT s.mc_nickname FROM sessions s " +
+        "JOIN players p ON p.mc_nickname = s.mc_nickname " +
+        "WHERE s.token = ? AND s.expires_at > ? AND p.is_banned = 0"
+    )
+      .bind(token, nowSeconds())
+      .first<{ mc_nickname: string }>();
+
+    if (!session) {
+      return json({ valid: false, error: "invalid_or_missing_token" }, 401);
+    }
+
+    return json({ valid: true, nickname: session.mc_nickname });
+  } catch (err) {
+    // Never log the token itself; the error class is enough.
+    console.error("auth-worker: session validation failed:", String(err));
+    return json({ valid: false, error: "invalid_or_missing_token" }, 401);
+  }
 }
 
 // POST /admin/ban — body: {mc_nickname, admin_key}
@@ -736,6 +782,8 @@ export default {
           return await handleLinks(request, env);
         case "/auth/request-otp-discord":
           return await handleRequestOtpDiscord(request, env);
+        case "/auth/validate":
+          return await handleValidate(request, env);
         case "/admin/ban":
           return await handleBan(request, env);
         case "/admin/unban":

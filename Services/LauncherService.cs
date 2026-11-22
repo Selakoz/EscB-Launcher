@@ -170,7 +170,8 @@ internal sealed class LauncherService
         await _clientUpdater.UpdateAsync(
             build,
             config.OptionalMods,
-            settings.OptionalModStates,
+            settings.GetModEnabledStates(),
+            settings.GetModOptionStates(),
             progress,
             cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();

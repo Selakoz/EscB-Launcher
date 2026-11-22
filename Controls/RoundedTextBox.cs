@@ -8,8 +8,11 @@ namespace EscapeBook.Controls;
 /// </summary>
 internal sealed class RoundedTextBox : Panel
 {
+    private static readonly Color InvalidFill = Color.FromArgb(58, 25, 32);
+
     private readonly TextBox _textBox;
     private bool _focused;
+    private bool _invalid;
     private int _cornerRadius = 10;
     private string _placeholderText = string.Empty;
 
@@ -47,6 +50,24 @@ internal sealed class RoundedTextBox : Panel
     }
 
     public TextBox InnerTextBox => _textBox;
+
+    /// <summary>
+    /// Highlights the field with a red border/background when the current value
+    /// does not pass validation.
+    /// </summary>
+    public bool IsInvalid
+    {
+        get => _invalid;
+        set
+        {
+            if (_invalid == value)
+                return;
+
+            _invalid = value;
+            _textBox.BackColor = value ? InvalidFill : Theme.Input;
+            Invalidate();
+        }
+    }
 
     public int CornerRadius
     {
@@ -146,10 +167,14 @@ internal sealed class RoundedTextBox : Panel
 
         var rect = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
         using var path = Theme.RoundedRect(rect, CornerRadius);
-        using var fill = new SolidBrush(Theme.Input);
+        using var fill = new SolidBrush(_invalid ? InvalidFill : Theme.Input);
         graphics.FillPath(fill, path);
 
-        using var pen = new Pen(_focused ? Theme.Accent : Theme.Border, _focused ? 1.6f : 1f);
+        Color borderColor = _invalid
+            ? Theme.Danger
+            : (_focused ? Theme.Accent : Theme.Border);
+
+        using var pen = new Pen(borderColor, _invalid || _focused ? 1.6f : 1f);
         graphics.DrawPath(pen, path);
     }
 }

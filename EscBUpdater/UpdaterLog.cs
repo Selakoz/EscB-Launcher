@@ -18,11 +18,23 @@ namespace EscBUpdater
 
         public static void Write(string message)
         {
+            WriteToDirectory(Updater.LauncherDirectory, message);
+        }
+
+        /// <summary>
+        /// Запись в журнал конкретной папки. Нужна процессу замены обновлятора:
+        /// он запущен из %TEMP%, но логи должен писать рядом с лаунчером.
+        /// </summary>
+        public static void WriteToDirectory(string directory, string message)
+        {
             try
             {
-                Directory.CreateDirectory(Updater.LauncherDirectory);
+                if (string.IsNullOrWhiteSpace(directory))
+                    directory = Updater.LauncherDirectory;
+
+                Directory.CreateDirectory(directory);
                 File.AppendAllText(
-                    LogFile,
+                    Path.Combine(directory, LogFileName),
                     "[" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "] " +
                     message + Environment.NewLine);
             }

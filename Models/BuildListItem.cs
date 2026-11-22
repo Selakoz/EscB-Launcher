@@ -13,6 +13,9 @@ internal sealed class BuildListItem
 
     public BuildInfo Build { get; init; } = new();
 
+    /// <summary>Секретная сборка (скрыта из списка по умолчанию).</summary>
+    public bool IsSecret => Build.IsSecret;
+
     public BuildStatus Status { get; init; }
 
     /// <summary>Левая зона строки: название сборки и версия Minecraft.</summary>

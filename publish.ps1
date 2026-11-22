@@ -9,6 +9,7 @@
     3) Compress-Archive publish/client -> publish/EscBClient.zip
     4) dotnet publish EscapeBookBootstrapper (net48, standalone, ~350 КБ
        вместе с вшитым обновлятором EscBUpdater.exe)
+    5) Копирование EscBUpdater.exe в publish (ассет самообновления)
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File publish.ps1
@@ -23,26 +24,32 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $root = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 Set-Location $root
 
-Write-Host "=== 1/4 Сборка решения ==="
+Write-Host "=== 1/5 Сборка решения ==="
 dotnet build EscapeBook.sln -c Release
 if ($LASTEXITCODE -ne 0) { throw "dotnet build завершился с ошибкой" }
 
 Write-Host ""
-Write-Host "=== 2/4 Публикация лаунчера (self-contained, win-x64) ==="
+Write-Host "=== 2/5 Публикация лаунчера (self-contained, win-x64) ==="
 if (Test-Path publish\client) { Remove-Item publish\client -Recurse -Force }
 dotnet publish EscapeBook.csproj -c Release -r win-x64 --self-contained true -o publish/client
 if ($LASTEXITCODE -ne 0) { throw "publish лаунчера завершился с ошибкой" }
 
 Write-Host ""
-Write-Host "=== 3/4 Архив EscBClient.zip ==="
+Write-Host "=== 3/5 Архив EscBClient.zip ==="
 if (Test-Path publish\EscBClient.zip) { Remove-Item publish\EscBClient.zip -Force }
 Compress-Archive -Path publish\client\* -DestinationPath publish\EscBClient.zip -CompressionLevel Optimal -Force
 
 Write-Host ""
-Write-Host "=== 4/4 Публикация bootstrapper (.NET Framework 4.8, standalone) ==="
+Write-Host "=== 4/5 Публикация bootstrapper (.NET Framework 4.8, standalone) ==="
 if (Test-Path publish\bootstrapper) { Remove-Item publish\bootstrapper -Recurse -Force }
 dotnet publish EscapeBookBootstrapper\EscapeBookBootstrapper.csproj -c Release -o publish\bootstrapper
 if ($LASTEXITCODE -ne 0) { throw "publish bootstrapper завершился с ошибкой" }
+
+Write-Host ""
+Write-Host "=== 5/5 Копирование EscBUpdater.exe (ассет самообновления) ==="
+$updaterExe = "EscBUpdater\bin\Release\net48\EscBUpdater.exe"
+if (!(Test-Path $updaterExe)) { throw "Не найден $updaterExe" }
+Copy-Item $updaterExe "publish\EscBUpdater.exe" -Force
 
 $clientDirMb = (Get-ChildItem publish\client -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB
 $zipMb = (Get-Item publish\EscBClient.zip).Length / 1MB
@@ -53,5 +60,5 @@ Write-Host ("publish/client (с runtime): {0:N1} MB" -f $clientDirMb)
 Write-Host ("publish/EscBClient.zip:     {0:N1} MB" -f $zipMb)
 Write-Host ("EscapeBookBootstrapper.exe: {0:N1} KB (standalone, без .NET 8)" -f $bootKb)
 Write-Host ""
-Write-Host "В GitHub Release загрузите: publish\EscBClient.zip и publish\bootstrapper\EscapeBookBootstrapper.exe"
+Write-Host "В GitHub Release загрузите: publish\EscBClient.zip, publish\bootstrapper\EscapeBookBootstrapper.exe и publish\EscBUpdater.exe"
 Write-Host "=== Готово ==="

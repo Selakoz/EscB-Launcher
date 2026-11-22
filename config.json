@@ -11,28 +11,28 @@
       "name": "Тестовая сборка (NeoForge 1.21.1)",
       "mc_version": "1.21.1",
       "version": "0.0.1",
-      "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.1/season-test.zip"
+      "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.3/season-test.zip"
     },
     {
       "id": "test",
       "name": "Тестовая сборка",
       "mc_version": "1.21.1",
       "version": "0.0.1",
-      "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.1/EscBClient.zip"
+      "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.3/season-test.zip"
     },
     {
       "id": "season2",
       "name": "Сезон 2 — Актуальный",
       "mc_version": "1.21.1",
       "version": "1.0.0",
-      "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v1.0.0/season2.zip"
+      "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.3/season-test.zip"
     },
     {
       "id": "season1",
       "name": "Сезон 1 — Архив",
       "mc_version": "1.20.1",
       "version": "1.0.0",
-      "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v1.0.0/season1.zip"
+      "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.3/season-test.zip"
     }
   ],
   "secret_builds": [

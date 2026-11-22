@@ -16,15 +16,35 @@ namespace EscapeBookBootstrapper
         [STAThread]
         private static int Main(string[] args)
         {
-            // ОБЯЗАТЕЛЬНО для .NET Framework 4.8: без явного TLS 1.2 запросы
-            // к GitHub API падают с ошибкой SSL/аутентификации. Выполняется
-            // до любых сетевых вызовов.
-            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
-
             // Диалог выбора папки должен выглядеть как нативный для Windows:
             // без этого .NET Framework 4.8 рисует элементы в устаревшем стиле.
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+
+            // Лицензионное соглашение показывается до TLS, сетевых вызовов
+            // и любых изменений на диске (первый запуск загрузчика).
+            if (!Bootstrapper.IsEulaAccepted())
+            {
+                using (var eula = new EulaForm())
+                {
+                    if (eula.ShowDialog() != DialogResult.OK)
+                    {
+                        MessageBox.Show(
+                            "Для использования лаунчера необходимо принять лицензионное соглашение.",
+                            "Установка отменена",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
+                        return 0;
+                    }
+
+                    Bootstrapper.SaveEulaAcceptance();
+                }
+            }
+
+            // ОБЯЗАТЕЛЬНО для .NET Framework 4.8: без явного TLS 1.2 запросы
+            // к GitHub API падают с ошибкой SSL/аутентификации. Выполняется
+            // до любых сетевых вызовов.
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
 
             try
             {

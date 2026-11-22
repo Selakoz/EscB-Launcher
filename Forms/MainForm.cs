@@ -24,6 +24,7 @@ internal sealed class MainForm : BaseDarkForm
 
     private LauncherConfig? _config;
     private RoundedTextBox _nickBox = null!;
+    private Label _lblAuthStatus = null!;
     private RoundedComboBox _buildsBox = null!;
     private Label _statusLabel = null!;
     private ModernProgressBar _progressBar = null!;
@@ -42,6 +43,11 @@ internal sealed class MainForm : BaseDarkForm
     private bool _busy;
     private bool _suppressBuildEvents;
 
+    // ---- Secret builds reveal (Ctrl+Shift+S, this session only) ----
+    private bool _showSecretBuilds;
+    private Label? _secretToastLabel;
+    private System.Windows.Forms.Timer? _secretToastTimer;
+
     // ---- Official website button debounce ----
     private DateTime _lastWebsiteClick = DateTime.MinValue;
 
@@ -57,6 +63,11 @@ internal sealed class MainForm : BaseDarkForm
     private ToolStripMenuItem? _linkTelegramItem;
     private ToolStripMenuItem? _linkDiscordItem;
     private bool _authorized;
+
+    // ---- Nickname validation / auth status ----
+    private string? _authMcNickname;
+    private bool _authStatusGreen;
+    private bool _nicknameValid;
 
     public MainForm() : base(new Size(460, 510), allowMinimize: true)
     {
@@ -77,9 +88,13 @@ internal sealed class MainForm : BaseDarkForm
         BuildLayout();
         WireAutoSave();
 
+        // React immediately to session save/clear from the auth dialog or settings.
+        SessionManager.AuthChanged += SessionManager_AuthChanged;
+
         // Secret codes are typed directly on the main window (no dedicated input).
         KeyPreview = true;
         KeyPress += MainForm_KeyPress;
+        KeyDown += MainForm_KeyDown;
 
         // Start in the unauthorized state; OnShown upgrades it when a valid
         // session for this machine (HWID match) is found.
@@ -178,24 +193,55 @@ internal sealed class MainForm : BaseDarkForm
             r++;
         }
 
+        // Nickname header: field label on the left, auth status on the right.
+        var nickHeader = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            BackColor = Theme.Surface,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            ColumnCount = 2,
+            RowCount = 1
+        };
+        nickHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        nickHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+        nickHeader.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
         var nickLabel = UiFactory.Label(
-            inner,
+            nickHeader,
             "НИКНЕЙМ",
             new Font("Segoe UI", 9f, FontStyle.Bold),
             Theme.Muted,
             Theme.Surface);
         nickLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-        AddInner(nickLabel, 4);
+        nickLabel.Margin = Padding.Empty;
+        nickHeader.Controls.Add(nickLabel, 0, 0);
+
+        _lblAuthStatus = UiFactory.Label(
+            nickHeader,
+            "❌ Оффлайн аккаунт",
+            new Font("Segoe UI", 8.5f),
+            Theme.Danger,
+            Theme.Surface);
+        _lblAuthStatus.AutoSize = true;
+        _lblAuthStatus.Anchor = AnchorStyles.Right | AnchorStyles.Top;
+        _lblAuthStatus.TextAlign = ContentAlignment.MiddleRight;
+        _lblAuthStatus.Margin = new Padding(8, 0, 0, 0);
+        nickHeader.Controls.Add(_lblAuthStatus, 1, 0);
+
+        AddInner(nickHeader, 4);
 
         _nickBox = new RoundedTextBox
         {
-            PlaceholderText = "Введите игровой никнейм",
+            PlaceholderText = "Введите никнейм",
             Text = _settings.Nickname,
             Height = 40,
             Font = new Font("Segoe UI", 10f)
         };
         _nickBox.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
         _nickBox.InnerTextBox.KeyDown += NickBox_KeyDown;
+        _nickBox.InnerTextBox.LostFocus += NickBox_LostFocus;
         AddInner(_nickBox, 12);
 
         var buildLabel = UiFactory.Label(
@@ -409,7 +455,25 @@ internal sealed class MainForm : BaseDarkForm
 
         ContentArea.ResumeLayout();
 
+        // ---- Secret-builds toast (revealed with Ctrl+Shift+S, session only) ----
+        _secretToastLabel = new Label
+        {
+            AutoSize = false,
+            Size = new Size(360, 28),
+            TextAlign = ContentAlignment.MiddleCenter,
+            BackColor = Theme.Surface,
+            ForeColor = Theme.Success,
+            Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+            Visible = false
+        };
+        ContentArea.Controls.Add(_secretToastLabel);
+        _secretToastLabel.BringToFront();
+
+        _secretToastTimer = new System.Windows.Forms.Timer { Interval = 4000 };
+        _secretToastTimer.Tick += (_, _) => HideSecretToast();
+
         CenterBanner();
+        PositionSecretToast();
     }
 
     /// <summary>
@@ -436,6 +500,7 @@ internal sealed class MainForm : BaseDarkForm
     {
         base.OnResize(e);
         CenterBanner();
+        PositionSecretToast();
     }
 
     /// <summary>
@@ -447,6 +512,7 @@ internal sealed class MainForm : BaseDarkForm
         {
             _settings.Nickname = _nickBox.Text;
             _session.SaveSoon();
+            UpdateAuthStatus();
         };
 
         _buildsBox.SelectedIndexChanged += (_, _) =>
@@ -523,7 +589,7 @@ internal sealed class MainForm : BaseDarkForm
     /// Switches the whole UI between authorized and unauthorized states:
     /// auth buttons vs profile button, play/build controls locked or not.
     /// </summary>
-    private void ApplyAuthState(bool authorized, string? nickname = null)
+    private void ApplyAuthState(bool authorized, string? nickname = null, bool clearNickname = false)
     {
         _authorized = authorized;
 
@@ -531,14 +597,26 @@ internal sealed class MainForm : BaseDarkForm
         _authDsButton.Visible = !authorized;
         _profileButton.Visible = authorized;
 
-        if (authorized && !string.IsNullOrWhiteSpace(nickname))
-            _profileButton.Text = nickname!;
+        if (authorized)
+        {
+            if (!string.IsNullOrWhiteSpace(nickname))
+                _authMcNickname = nickname.Trim();
+
+            _profileButton.Text = _authMcNickname ?? "Профиль";
+        }
+        else
+        {
+            _authMcNickname = null;
+            _profileButton.Text = "Профиль";
+
+            // Logout explicitly clears the field; the initial unauthorized
+            // state keeps the nickname restored from settings.
+            if (clearNickname)
+                _nickBox.Text = string.Empty;
+        }
 
         if (!_busy)
-        {
             _buildsBox.Enabled = authorized;
-            _playButton.Enabled = authorized;
-        }
 
         if (authorized)
         {
@@ -553,6 +631,155 @@ internal sealed class MainForm : BaseDarkForm
             _toolTip.SetToolTip(_buildsBox, hint);
             SetStatus("Не авторизовано — войдите через Telegram или Discord", Theme.Warning);
         }
+
+        // Auto-fills the nickname for an authorized session and refreshes the
+        // status label, validation colours and play-button state.
+        UpdateAuthStatus();
+    }
+
+    /// <summary>
+    /// SessionManager raises this after the session file is saved or cleared.
+    /// Keeping the indicator here makes the status update immediately after
+    /// linking/logging out, even when the change comes from another dialog.
+    /// </summary>
+    private void SessionManager_AuthChanged(object? sender, EventArgs e)
+    {
+        if (IsDisposed)
+            return;
+
+        if (InvokeRequired)
+        {
+            TryBeginInvoke(() => SessionManager_AuthChanged(sender, e));
+            return;
+        }
+
+        SessionData? session = SessionManager.LoadSession();
+
+        if (session == null)
+        {
+            ApplyAuthState(false, clearNickname: true);
+            return;
+        }
+
+        ApplyAuthState(true, session.McNickname);
+    }
+
+    /// <summary>
+    /// Five-state indicator from the task table:
+    /// offline+empty, offline+typed, authorized+auto-filled, authorized+equal,
+    /// authorized+mismatch. Also refreshes nickname validation and play button.
+    /// </summary>
+    private void UpdateAuthStatus()
+    {
+        if (_lblAuthStatus is null || _nickBox is null)
+            return;
+
+        if (string.IsNullOrWhiteSpace(_authMcNickname))
+        {
+            _authStatusGreen = false;
+            bool empty = string.IsNullOrWhiteSpace(_nickBox.Text);
+
+            SetAuthStatus(
+                "❌ Оффлайн аккаунт",
+                Theme.Danger,
+                empty
+                    ? "Привяжите аккаунт через Telegram/Discord для входа на сервер"
+                    : "С оффлайн аккаунтом нельзя зайти на сервер");
+        }
+        else
+        {
+            // Case 3: authorized account with an empty field is auto-filled.
+            if (string.IsNullOrWhiteSpace(_nickBox.Text))
+                _nickBox.Text = _authMcNickname;
+
+            // Minecraft nicknames are case-insensitive.
+            if (string.Equals(
+                    _nickBox.Text.Trim(),
+                    _authMcNickname,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                _authStatusGreen = true;
+                SetAuthStatus(
+                    "✅ Авторизованный аккаунт",
+                    Theme.Success,
+                    "Можно заходить на сервер");
+            }
+            else
+            {
+                _authStatusGreen = false;
+                SetAuthStatus(
+                    "❌ Оффлайн аккаунт",
+                    Theme.Danger,
+                    "Никнейм не совпадает с привязанным аккаунтом. Войти на сервер нельзя");
+            }
+        }
+
+        UpdateNicknameValidation();
+        UpdatePlayEnabled();
+    }
+
+    private void SetAuthStatus(string text, Color color, string tooltip)
+    {
+        _lblAuthStatus.Text = text;
+        _lblAuthStatus.ForeColor = color;
+        _toolTip.SetToolTip(_lblAuthStatus, tooltip);
+    }
+
+    /// <summary>
+    /// Real-time Minecraft nickname validation: 3-16 letters/digits/underscore.
+    /// Invalid values highlight the field and lock the primary action.
+    /// </summary>
+    private void UpdateNicknameValidation()
+    {
+        if (_nickBox is null)
+            return;
+
+        string nickname = _nickBox.Text.Trim();
+        _nicknameValid = NicknameRegex.IsMatch(nickname);
+        _nickBox.IsInvalid = !_nicknameValid;
+
+        if (_nicknameValid)
+        {
+            _toolTip.SetToolTip(_nickBox, string.Empty);
+        }
+        else if (nickname.Length > 0)
+        {
+            _toolTip.SetToolTip(
+                _nickBox,
+                "Никнейм: 3–16 символов (A-Z, a-z, 0-9, _)");
+        }
+        else
+        {
+            _toolTip.SetToolTip(_nickBox, "Введите никнейм");
+        }
+    }
+
+    private void UpdatePlayEnabled()
+    {
+        if (_playButton is null)
+            return;
+
+        _playButton.Enabled =
+            !_busy &&
+            _gameProcess == null &&
+            _authorized &&
+            _authStatusGreen &&
+            _nicknameValid;
+    }
+
+    /// <summary>
+    /// Placeholder disappears on focus (native TextBox behaviour). On blur an
+    /// empty field is restored to the linked Minecraft nickname.
+    /// </summary>
+    private void NickBox_LostFocus(object? sender, EventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_nickBox.Text) &&
+            !string.IsNullOrWhiteSpace(_authMcNickname))
+        {
+            _nickBox.Text = _authMcNickname;
+        }
+
+        UpdateAuthStatus();
     }
 
     private void AuthTelegram_Click(object? sender, EventArgs e) => OpenAuthDialog(AuthChannel.Telegram);
@@ -705,7 +932,7 @@ internal sealed class MainForm : BaseDarkForm
     private void PerformLogout()
     {
         SessionManager.ClearSession();
-        ApplyAuthState(false);
+        ApplyAuthState(false, clearNickname: true);
         SetStatus("Вы вышли из аккаунта", Theme.Muted);
     }
 
@@ -720,7 +947,9 @@ internal sealed class MainForm : BaseDarkForm
         // Re-check every build against the local instance folders.
         _statuses = _statusService.RefreshStatuses(_config.Builds);
 
-        var items = _config.Builds
+        List<BuildInfo> visibleBuilds = GetVisibleBuilds();
+
+        var items = visibleBuilds
             .Select(build =>
             {
                 BuildStatus status = _statuses.TryGetValue(build.Id, out BuildStatus value)
@@ -751,7 +980,7 @@ internal sealed class MainForm : BaseDarkForm
         }
         else
         {
-            _selectedBuild = _config.Builds[0];
+            _selectedBuild = visibleBuilds.Count > 0 ? visibleBuilds[0] : _config.Builds[0];
             _selectedStatus = BuildStatus.NotInstalled;
         }
 
@@ -761,6 +990,84 @@ internal sealed class MainForm : BaseDarkForm
     }
 
     // ---------------------------------------------------------- secret builds
+
+    /// <summary>
+    /// Builds shown in the dropdown. Secret builds stay hidden unless the user
+    /// revealed them for this session (Ctrl+Shift+S) or manually selected one via
+    /// <c>selectedBuildId</c> in user_settings.json — the manually chosen build is
+    /// always kept visible so friends can still play it.
+    /// </summary>
+    private List<BuildInfo> GetVisibleBuilds()
+    {
+        if (_config == null)
+            return new List<BuildInfo>();
+
+        return _config.Builds
+            .Where(build =>
+                !build.IsSecret ||
+                _showSecretBuilds ||
+                string.Equals(
+                    build.Id,
+                    _settings.SelectedBuildId,
+                    StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    /// <summary>Ctrl+Shift+S on the builds dropdown reveals secret builds for this session.</summary>
+    private void MainForm_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (!e.Control || !e.Shift || e.KeyCode != Keys.S || !_buildsBox.Focused)
+            return;
+
+        e.Handled = true;
+        e.SuppressKeyPress = true;
+        RevealSecretBuilds();
+    }
+
+    /// <summary>
+    /// Rebuilds the dropdown with secret builds included and shows the reveal
+    /// toast. The flag lives only in memory, so a restart hides them again.
+    /// </summary>
+    private void RevealSecretBuilds()
+    {
+        if (_busy || _config == null)
+            return;
+
+        _showSecretBuilds = true;
+        PopulateBuilds();
+        ShowSecretToast("Секретные сборки раскрыты на эту сессию");
+    }
+
+    private void ShowSecretToast(string text)
+    {
+        if (_secretToastLabel == null)
+            return;
+
+        _secretToastLabel.Text = text;
+        PositionSecretToast();
+        _secretToastLabel.Visible = true;
+        _secretToastLabel.BringToFront();
+
+        _secretToastTimer?.Stop();
+        _secretToastTimer?.Start();
+    }
+
+    private void HideSecretToast()
+    {
+        _secretToastTimer?.Stop();
+
+        if (_secretToastLabel != null)
+            _secretToastLabel.Visible = false;
+    }
+
+    private void PositionSecretToast()
+    {
+        if (_secretToastLabel == null || _secretToastLabel.Parent is not Control host)
+            return;
+
+        _secretToastLabel.Left = Math.Max(0, (host.ClientSize.Width - _secretToastLabel.Width) / 2);
+        _secretToastLabel.Top = Math.Max(0, host.ClientSize.Height - _secretToastLabel.Height - 96);
+    }
 
     /// <summary>
     /// Listens for a secret code typed anywhere on the main window. The buffer keeps
@@ -822,7 +1129,7 @@ internal sealed class MainForm : BaseDarkForm
 
         _statuses = _statusService.RefreshStatuses(_config.Builds);
 
-        var items = _config.Builds
+        var items = GetVisibleBuilds()
             .Select(build =>
             {
                 BuildStatus status = _statuses.TryGetValue(build.Id, out BuildStatus value)
@@ -900,7 +1207,13 @@ internal sealed class MainForm : BaseDarkForm
         // Game actions stay locked while the user is not authorized.
         _buildsBox.Enabled = enabled && _authorized;
         _settingsButton.Enabled = enabled;
-        _playButton.Enabled = enabled && _authorized;
+        _playButton.Enabled =
+            enabled &&
+            !_busy &&
+            _gameProcess == null &&
+            _authorized &&
+            _authStatusGreen &&
+            _nicknameValid;
     }
 
     /// <summary>
@@ -945,6 +1258,15 @@ internal sealed class MainForm : BaseDarkForm
         if (!_authorized)
         {
             SetStatus("Сначала авторизуйтесь через Telegram или Discord", Theme.Warning);
+            return;
+        }
+
+        if (!_authStatusGreen || !_nicknameValid)
+        {
+            SetStatus(
+                "Войдите под привязанным никнеймом, чтобы играть на сервере",
+                Theme.Danger);
+            _nickBox.InnerTextBox.Focus();
             return;
         }
 
@@ -1209,7 +1531,7 @@ internal sealed class MainForm : BaseDarkForm
         _busy = false;
 
         SetControlsEnabled(true);
-        _playButton.Enabled = true;
+        UpdatePlayEnabled();
         UpdatePlayButtonForSelectedBuild();
         _progressBar.Value = 100;
 
@@ -1241,7 +1563,7 @@ internal sealed class MainForm : BaseDarkForm
             // window to the unauthorized state (game actions locked).
             if (form.LogoutRequested && !IsDisposed)
             {
-                ApplyAuthState(false);
+                ApplyAuthState(false, clearNickname: true);
                 SetStatus("Вы вышли из аккаунта", Theme.Muted);
             }
         }
@@ -1320,10 +1642,12 @@ internal sealed class MainForm : BaseDarkForm
     {
         if (disposing)
         {
+            SessionManager.AuthChanged -= SessionManager_AuthChanged;
             _session.Dispose();
             _lifetimeCts.Dispose();
             _toolTip.Dispose();
             _profileMenu?.Dispose();
+            _secretToastTimer?.Dispose();
         }
 
         base.Dispose(disposing);

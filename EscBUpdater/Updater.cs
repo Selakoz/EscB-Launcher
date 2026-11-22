@@ -19,10 +19,13 @@ namespace EscBUpdater
     /// <summary>
     /// Лёгкий «проверяльщик обновлений». Запускается ярлыком с рабочего стола:
     ///   1. Запрашивает у GitHub Releases последний релиз.
-    ///   2. Если тег новее локального <c>.bootstrapper_version</c> — скачивает
-    ///      <c>EscBClient.zip</c>, чистит старую папку лаунчера (кроме
-    ///      пользовательских файлов) и распаковывает архив.
-    ///   3. Запускает <c>EscBClient.exe</c> и завершается.
+    ///   2. Проверяет три компонента из одного релиза: сам обновлятор
+    ///      (<c>EscBUpdater.exe</c>), загрузчик (<c>EscapeBookBootstrapper.exe</c>)
+    ///      и лаунчер (<c>EscBClient.zip</c>).
+    ///   3. Обновлятор заменяет сам себя через новый экземпляр с ключом
+    ///      <c>--replace-self</c>, загрузчик обновляется рядом с лаунчером,
+    ///      архив клиента распаковывается в папку лаунчера.
+    ///   4. Запускает <c>EscBClient.exe</c> и завершается.
     /// Вся логика намеренно повторяет загрузчик, но без UI и без лишних
     /// зависимостей: EXE остаётся меньше 1 МБ.
     /// </summary>
@@ -32,10 +35,20 @@ namespace EscBUpdater
         private const string GitHubOwner = "Selakoz";
         private const string GitHubRepo = "EscB-Launcher";
 
-        private const string ReleaseAssetName = "EscBClient.zip";
+        // Все три компонента публикуются ассетами в одном GitHub Release.
+        private const string ClientAssetName = "EscBClient.zip";
+        private const string BootstrapperAssetName = "EscapeBookBootstrapper.exe";
+        private const string UpdaterAssetName = "EscBUpdater.exe";
+
         private const string MainExecutableName = "EscBClient.exe";
+        private const string BootstrapperExecutableName = "EscapeBookBootstrapper.exe";
         private const string UpdaterExecutableName = "EscBUpdater.exe";
-        private const string VersionFileName = ".bootstrapper_version";
+
+        // По умолчанию папка лаунчера — %APPDATA%\.escapebook\launcher.
+        // Файлы версий лежат рядом с компонентами (в той же папке).
+        private const string ClientVersionFileName = ".client_version";
+        private const string BootstrapperVersionFileName = ".bootstrapper_version";
+        internal const string UpdaterVersionFileName = ".updater_version";
 
         private const int CopyBufferSize = 81920;
 
@@ -63,9 +76,24 @@ namespace EscBUpdater
             get { return Path.Combine(LauncherDirectory, MainExecutableName); }
         }
 
-        public static string VersionFile
+        public static string BootstrapperExecutablePath
         {
-            get { return Path.Combine(LauncherDirectory, VersionFileName); }
+            get { return Path.Combine(LauncherDirectory, BootstrapperExecutableName); }
+        }
+
+        public static string ClientVersionFile
+        {
+            get { return Path.Combine(LauncherDirectory, ClientVersionFileName); }
+        }
+
+        public static string BootstrapperVersionFile
+        {
+            get { return Path.Combine(LauncherDirectory, BootstrapperVersionFileName); }
+        }
+
+        public static string UpdaterVersionFile
+        {
+            get { return Path.Combine(LauncherDirectory, UpdaterVersionFileName); }
         }
 
         public static async Task<int> RunAsync(string[] args)
@@ -80,30 +108,29 @@ namespace EscBUpdater
             try
             {
                 ReleaseInfo release = await FetchLatestReleaseAsync().ConfigureAwait(false);
-                string assetUrl = release == null ? null : release.AssetUrl;
 
                 if (release == null)
                 {
-                    Log("Не удалось получить информацию о релизе; пробуем запустить установленный клиент.");
-                }
-                else if (string.IsNullOrEmpty(assetUrl))
-                {
-                    Log("В релизе '" + release.TagName + "' не найден ассет '" + ReleaseAssetName + "'.");
+                    Log("Не удалось получить информацию о релизе; пропускаем обновления и запускаем установленный клиент.");
                 }
                 else
                 {
-                    string localTag = ReadLocalVersion();
+                    Log("Ассеты релиза: обновлятор=" + DescribeAsset(release.UpdaterAssetUrl) +
+                        ", загрузчик=" + DescribeAsset(release.BootstrapperAssetUrl) +
+                        ", клиент=" + DescribeAsset(release.ClientAssetUrl) + ".");
 
-                    if (IsRemoteNewer(release.TagName, localTag))
+                    // Самообновление всегда первым: новый экземпляр продолжит
+                    // остальные обновления уже из заменённого файла.
+                    bool selfUpdated = await TrySelfUpdateAsync(release).ConfigureAwait(false);
+                    if (selfUpdated)
                     {
-                        Log("Требуется обновление: локально='" + localTag + "', удалённо='" + release.TagName + "'.");
-                        await DownloadAndApplyAsync(assetUrl, release.TagName).ConfigureAwait(false);
-                        updated = true;
+                        Log("Текущий обновлятор завершает работу; замену продолжит новый экземпляр.");
+                        return 0;
                     }
-                    else
-                    {
-                        Log("Обновление не требуется ('" + localTag + "').");
-                    }
+
+                    bool bootstrapperUpdated = await TryUpdateBootstrapperAsync(release).ConfigureAwait(false);
+                    bool clientUpdated = await TryUpdateClientAsync(release).ConfigureAwait(false);
+                    updated = bootstrapperUpdated || clientUpdated;
                 }
             }
             catch (Exception ex)
@@ -128,7 +155,7 @@ namespace EscBUpdater
                 return 1;
             }
 
-            Log(updated ? "Клиент обновлён и запущен." : "Клиент запущен.");
+            Log(updated ? "Обновления применены, клиент запущен." : "Клиент запущен.");
             return 0;
         }
 
@@ -200,28 +227,237 @@ namespace EscBUpdater
                 return null;
 
             string tagName = dto.TagName ?? string.Empty;
-            string assetUrl = null;
+            string clientUrl = null;
+            string bootstrapperUrl = null;
+            string updaterUrl = null;
 
             if (dto.Assets != null)
             {
                 foreach (AssetDto asset in dto.Assets)
                 {
-                    if (asset == null)
+                    if (asset == null || string.IsNullOrEmpty(asset.BrowserDownloadUrl))
                         continue;
 
-                    if (!string.Equals(asset.Name, ReleaseAssetName, StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    if (!string.IsNullOrEmpty(asset.BrowserDownloadUrl))
-                    {
-                        assetUrl = asset.BrowserDownloadUrl;
-                        break;
-                    }
+                    if (string.Equals(asset.Name, ClientAssetName, StringComparison.OrdinalIgnoreCase))
+                        clientUrl = asset.BrowserDownloadUrl;
+                    else if (string.Equals(asset.Name, BootstrapperAssetName, StringComparison.OrdinalIgnoreCase))
+                        bootstrapperUrl = asset.BrowserDownloadUrl;
+                    else if (string.Equals(asset.Name, UpdaterAssetName, StringComparison.OrdinalIgnoreCase))
+                        updaterUrl = asset.BrowserDownloadUrl;
                 }
             }
 
             Log("Тег последнего релиза: '" + tagName + "'.");
-            return new ReleaseInfo(tagName, assetUrl);
+            return new ReleaseInfo(tagName, clientUrl, bootstrapperUrl, updaterUrl);
+        }
+
+        private static string DescribeAsset(string assetUrl)
+        {
+            return string.IsNullOrEmpty(assetUrl) ? "нет" : "есть";
+        }
+
+        // -------------------------------------------------------------- self-update
+
+        /// <summary>
+        /// Скачивает новый обновлятор во временный файл и запускает его с
+        /// <c>--replace-self &lt;текущий exe&gt; &lt;тег&gt;</c>. Текущий процесс
+        /// после этого должен немедленно завершиться.
+        /// </summary>
+        private static async Task<bool> TrySelfUpdateAsync(ReleaseInfo release)
+        {
+            if (string.IsNullOrEmpty(release.UpdaterAssetUrl))
+            {
+                Log("В релизе '" + release.TagName + "' нет ассета '" + UpdaterAssetName + "'.");
+                return false;
+            }
+
+            string localTag = ReadVersion(UpdaterVersionFile);
+
+            if (!IsRemoteNewer(release.TagName, localTag))
+            {
+                Log("Обновлятор актуален ('" + localTag + "').");
+                return false;
+            }
+
+            Log("Требуется обновление обновлятора: локально='" + localTag +
+                "', удалённо='" + release.TagName + "'.");
+
+            string tempPath = Path.Combine(Path.GetTempPath(), "EscBUpdater_new.exe");
+
+            try
+            {
+                TryDeleteFile(tempPath);
+
+                Log("Скачивание новой версии обновлятора...");
+                await DownloadFileAsync(release.UpdaterAssetUrl, tempPath).ConfigureAwait(false);
+
+                string currentExecutable = GetCurrentExecutablePath();
+
+                if (string.IsNullOrEmpty(currentExecutable) || !File.Exists(currentExecutable))
+                {
+                    throw new FileNotFoundException(
+                        "Не найден текущий файл обновлятора.",
+                        currentExecutable);
+                }
+
+                ProcessStartInfo startInfo = new ProcessStartInfo
+                {
+                    FileName = tempPath,
+                    Arguments = "--replace-self " + QuoteArgument(currentExecutable) + " " +
+                                QuoteArgument(release.TagName),
+                    WorkingDirectory = LauncherDirectory,
+                    UseShellExecute = true
+                };
+
+                Process.Start(startInfo);
+
+                Log("Новый обновлятор запущен для замены: " + currentExecutable);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log("Не удалось обновить обновлятор: " + ex.Message);
+                TryDeleteFile(tempPath);
+                return false;
+            }
+        }
+
+        /// <summary>Записывает версию обновлятора рядом с заменённым EXE.</summary>
+        internal static void WriteUpdaterVersionForDirectory(string launcherDirectory, string remoteTag)
+        {
+            WriteVersion(Path.Combine(launcherDirectory, UpdaterVersionFileName), remoteTag);
+        }
+
+        // ------------------------------------------------------------ bootstrapper
+
+        private static async Task<bool> TryUpdateBootstrapperAsync(ReleaseInfo release)
+        {
+            if (string.IsNullOrEmpty(release.BootstrapperAssetUrl))
+            {
+                Log("В релизе '" + release.TagName + "' нет ассета '" + BootstrapperAssetName + "'.");
+                return false;
+            }
+
+            string localTag = ReadVersion(BootstrapperVersionFile);
+            bool missing = !File.Exists(BootstrapperExecutablePath);
+
+            if (!missing && !IsRemoteNewer(release.TagName, localTag))
+            {
+                Log("Загрузчик актуален ('" + localTag + "').");
+                return false;
+            }
+
+            Log("Требуется обновление загрузчика: локально='" +
+                (missing ? "файл отсутствует" : localTag) +
+                "', удалённо='" + release.TagName + "'.");
+
+            try
+            {
+                await DownloadAndApplyBootstrapperAsync(
+                    release.BootstrapperAssetUrl,
+                    release.TagName).ConfigureAwait(false);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // Ошибка одного компонента не должна мешать остальным.
+                Log("Не удалось обновить загрузчик: " + ex);
+                return false;
+            }
+        }
+
+        private static async Task DownloadAndApplyBootstrapperAsync(string assetUrl, string remoteTag)
+        {
+            string tempFile = Path.Combine(
+                Path.GetTempPath(),
+                "EscapeBookBootstrapper_new_" + Guid.NewGuid().ToString("N") + ".exe");
+
+            string targetPath = BootstrapperExecutablePath;
+            string backupPath = targetPath + ".old";
+
+            try
+            {
+                Log("Скачивание новой версии загрузчика...");
+                await DownloadFileAsync(assetUrl, tempFile).ConfigureAwait(false);
+
+                Log("Установка загрузчика...");
+                TryDeleteFile(backupPath);
+
+                bool hadOldFile = File.Exists(targetPath);
+                if (hadOldFile)
+                    File.Move(targetPath, backupPath);
+
+                try
+                {
+                    MoveOrCopyFile(tempFile, targetPath);
+
+                    if (!File.Exists(targetPath))
+                    {
+                        throw new FileNotFoundException(
+                            "Не удалось установить " + BootstrapperExecutableName + ".",
+                            targetPath);
+                    }
+                }
+                catch
+                {
+                    // Возвращаем старый загрузчик, чтобы установка осталась рабочей.
+                    if (hadOldFile && !File.Exists(targetPath) && File.Exists(backupPath))
+                    {
+                        try
+                        {
+                            File.Move(backupPath, targetPath);
+                        }
+                        catch
+                        {
+                            // Best effort.
+                        }
+                    }
+
+                    throw;
+                }
+
+                WriteVersion(BootstrapperVersionFile, remoteTag);
+                TryDeleteFile(backupPath);
+                Log("Загрузчик обновлён до '" + remoteTag + "'.");
+            }
+            finally
+            {
+                TryDeleteFile(tempFile);
+            }
+        }
+
+        // ------------------------------------------------------------------ client
+
+        private static async Task<bool> TryUpdateClientAsync(ReleaseInfo release)
+        {
+            if (string.IsNullOrEmpty(release.ClientAssetUrl))
+            {
+                Log("В релизе '" + release.TagName + "' нет ассета '" + ClientAssetName + "'.");
+                return false;
+            }
+
+            string localTag = ReadVersion(ClientVersionFile);
+
+            if (!IsRemoteNewer(release.TagName, localTag))
+            {
+                Log("Клиент актуален ('" + localTag + "').");
+                return false;
+            }
+
+            Log("Требуется обновление клиента: локально='" + localTag +
+                "', удалённо='" + release.TagName + "'.");
+
+            try
+            {
+                await DownloadAndApplyAsync(release.ClientAssetUrl, release.TagName).ConfigureAwait(false);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // Ошибка клиента не должна мешать запуску уже установленной версии.
+                Log("Не удалось обновить клиент: " + ex);
+                return false;
+            }
         }
 
         // ----------------------------------------------------------------- download
@@ -265,8 +501,8 @@ namespace EscBUpdater
                         MainExecutablePath);
                 }
 
-                File.WriteAllText(VersionFile, remoteTag);
-                Log("Файл версии обновлён: '" + remoteTag + "'.");
+                WriteVersion(ClientVersionFile, remoteTag);
+                Log("Файл версии клиента обновлён: '" + remoteTag + "'.");
             }
             finally
             {
@@ -323,7 +559,7 @@ namespace EscBUpdater
             FileInfo downloaded = new FileInfo(destination);
             if (!downloaded.Exists || downloaded.Length == 0)
             {
-                throw new InvalidDataException("Скачанный архив пуст.");
+                throw new InvalidDataException("Скачанный файл пуст.");
             }
         }
 
@@ -331,9 +567,10 @@ namespace EscBUpdater
 
         /// <summary>
         /// Удаляет файлы предыдущей версии из папки лаунчера. Пользовательские
-        /// данные (<c>user_settings.json</c>, кэш конфига) и сам обновлятор
-        /// сохраняются; папка <c>instances</c> лежит вне launcher и не трогается.
-        /// Занятые запущенным клиентом файлы переименовываются в <c>.old</c>.
+        /// данные (<c>user_settings.json</c>, кэш конфига), сам обновлятор,
+        /// загрузчик и файлы версий сохраняются; папка <c>instances</c> лежит
+        /// вне launcher и не трогается. Занятые запущенным клиентом файлы
+        /// переименовываются в <c>.old</c>.
         /// </summary>
         private static void ClearLauncherDirectory()
         {
@@ -345,8 +582,11 @@ namespace EscBUpdater
                 "user_settings.json",
                 ".launcher_config.json",
                 UpdaterExecutableName,
+                BootstrapperExecutableName,
                 UpdaterLog.LogFileName,
-                VersionFileName
+                ClientVersionFileName,
+                BootstrapperVersionFileName,
+                UpdaterVersionFileName
             };
 
             int deleted = 0;
@@ -499,6 +739,20 @@ namespace EscBUpdater
             TryDeleteFile(backupFile);
         }
 
+        private static void MoveOrCopyFile(string sourceFile, string targetFile)
+        {
+            try
+            {
+                File.Move(sourceFile, targetFile);
+            }
+            catch (IOException)
+            {
+                // %TEMP% может быть на другом диске — тогда переносим копированием.
+                File.Copy(sourceFile, targetFile, true);
+                TryDeleteFile(sourceFile);
+            }
+        }
+
         private static void CleanupLeftoverFiles()
         {
             try
@@ -568,19 +822,40 @@ namespace EscBUpdater
 
         // -------------------------------------------------------------- version/store
 
-        private static string ReadLocalVersion()
+        private static string ReadVersion(string versionFile)
         {
             try
             {
-                if (!File.Exists(VersionFile))
+                if (!File.Exists(versionFile))
                     return string.Empty;
 
-                return File.ReadAllText(VersionFile).Trim().TrimStart('\uFEFF');
+                return File.ReadAllText(versionFile).Trim().TrimStart('\uFEFF');
             }
             catch (Exception ex)
             {
-                Log("Не удалось прочитать локальную версию: " + ex.Message);
+                Log("Не удалось прочитать файл версии '" + versionFile + "': " + ex.Message);
                 return string.Empty;
+            }
+        }
+
+        private static void WriteVersion(string versionFile, string remoteTag)
+        {
+            string directory = Path.GetDirectoryName(versionFile);
+
+            try
+            {
+                if (!string.IsNullOrEmpty(directory))
+                    Directory.CreateDirectory(directory);
+
+                File.WriteAllText(versionFile, remoteTag ?? string.Empty);
+                UpdaterLog.WriteToDirectory(directory, "Файл версии обновлён: '" + versionFile +
+                                                       "' = '" + remoteTag + "'.");
+            }
+            catch (Exception ex)
+            {
+                UpdaterLog.WriteToDirectory(directory, "Не удалось записать файл версии '" +
+                                                       versionFile + "': " + ex.Message);
+                throw;
             }
         }
 
@@ -631,6 +906,28 @@ namespace EscBUpdater
 
         // -------------------------------------------------------------------- infra
 
+        private static string GetCurrentExecutablePath()
+        {
+            try
+            {
+                string path = Process.GetCurrentProcess().MainModule.FileName;
+                if (!string.IsNullOrWhiteSpace(path))
+                    return path;
+            }
+            catch
+            {
+                // MainModule может быть недоступен — используем папку лаунчера.
+            }
+
+            return Path.Combine(LauncherDirectory, UpdaterExecutableName);
+        }
+
+        private static string QuoteArgument(string value)
+        {
+            // Тег не должен ломать командную строку; кавычки в нём недопустимы.
+            return "\"" + (value ?? string.Empty).Replace("\"", string.Empty) + "\"";
+        }
+
         private static HttpClient CreateHttpClient(TimeSpan timeout)
         {
             HttpClient client = new HttpClient();
@@ -676,15 +973,25 @@ namespace EscBUpdater
 
         private sealed class ReleaseInfo
         {
-            public ReleaseInfo(string tagName, string assetUrl)
+            public ReleaseInfo(
+                string tagName,
+                string clientAssetUrl,
+                string bootstrapperAssetUrl,
+                string updaterAssetUrl)
             {
                 TagName = tagName ?? string.Empty;
-                AssetUrl = assetUrl;
+                ClientAssetUrl = clientAssetUrl;
+                BootstrapperAssetUrl = bootstrapperAssetUrl;
+                UpdaterAssetUrl = updaterAssetUrl;
             }
 
             public string TagName { get; }
 
-            public string AssetUrl { get; }
+            public string ClientAssetUrl { get; }
+
+            public string BootstrapperAssetUrl { get; }
+
+            public string UpdaterAssetUrl { get; }
         }
     }
 
