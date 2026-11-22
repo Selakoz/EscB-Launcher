@@ -7,6 +7,13 @@
   "website_url": "https://escapebook.site/",
   "builds": [
     {
+      "id": "season-test",
+      "name": "Тестовая сборка (NeoForge 1.21.1)",
+      "mc_version": "1.21.1",
+      "version": "0.0.1",
+      "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.1/season-test.zip"
+    },
+    {
       "id": "test",
       "name": "Тестовая сборка",
       "mc_version": "1.21.1",
@@ -26,13 +33,6 @@
       "mc_version": "1.20.1",
       "version": "1.0.0",
       "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v1.0.0/season1.zip"
-    },
-    {
-      "id": "secret2024",
-      "name": "SECRET2024",
-      "mc_version": "1.20.1",
-      "version": "1.0.0",
-      "client_zip_url": "https://github.com/your-account/your-repo/releases/download/v1.0.0/secret2024.zip"
     }
   ],
   "secret_builds": [
@@ -43,7 +43,7 @@
         "name": "Секретный сезон",
         "mc_version": "1.21.1",
         "version": "1.0.0",
-        "client_zip_url": "https://github.com/your-account/your-repo/releases/download/v1.0.0/secret.zip"
+        "client_zip_url": "https://github.com/Selakoz/EscB-Launcher/releases/download/v0.0.3/season-test.zip"
       }
     }
   ],
@@ -68,9 +68,20 @@
     },
     {
       "name": "Миникарта",
-      "description": "Выберите Xaero's Minimap или JourneyMap.",
-      "file_prefixes": ["xaeros", "journeymap"],
-      "enabled_by_default": true
+      "description": "Выберите одну миникарту (Xaero's или JourneyMap).",
+      "type": "radio",
+      "options": [
+        {
+          "name": "Xaero's Minimap",
+          "file_prefixes": ["xaeros-"],
+          "enabled_by_default": true
+        },
+        {
+          "name": "JourneyMap",
+          "file_prefixes": ["journeymap-"],
+          "enabled_by_default": false
+        }
+      ]
     }
   ]
 }
