@@ -35,6 +35,14 @@ internal sealed class UserSettings
     public string SessionToken { get; set; } = string.Empty;
 
     /// <summary>
+    /// Device HWID (32 hex chars) bound to <see cref="SessionToken"/>. Mirrored
+    /// here so the launcher and external tools (skin upload page) can send
+    /// <c>X-HWID</c>. Never logged.
+    /// </summary>
+    [JsonPropertyName("hwid")]
+    public string Hwid { get; set; } = string.Empty;
+
+    /// <summary>
     /// Per-mod state chosen by the player (key = optional_mods.name).
     /// Checkbox mods store a boolean; radio mods store the selected option name,
     /// e.g. <c>"Миникарта": "Xaero's Minimap"</c>.
@@ -121,6 +129,7 @@ internal sealed class UserSettings
             JavaPath = JavaPath,
             SelectedBuildId = SelectedBuildId,
             SessionToken = SessionToken,
+            Hwid = Hwid,
             AppliedJvmPresetVersion = AppliedJvmPresetVersion,
             OptionalModStates = new Dictionary<string, JsonElement>(OptionalModStates)
         };

@@ -1,5 +1,7 @@
 using System.Management;
+using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
@@ -40,6 +42,32 @@ internal sealed class LinksResult
 
     public static LinksResult Fail(string reason) =>
         new() { Success = false, ErrorReason = reason };
+}
+
+internal enum SessionValidationStatus
+{
+    Valid,
+    /// <summary>401/hwid_mismatch: clear the local session and force re-login.</summary>
+    Invalid,
+    /// <summary>Network/5xx: keep the local session and retry later.</summary>
+    Unavailable
+}
+
+/// <summary>Result of GET /auth/validate (token + device HWID).</summary>
+internal sealed class SessionValidationResult
+{
+    public SessionValidationStatus Status { get; init; }
+    public string Nickname { get; init; } = string.Empty;
+    public string ErrorReason { get; init; } = string.Empty;
+
+    public static SessionValidationResult Valid(string nickname) =>
+        new() { Status = SessionValidationStatus.Valid, Nickname = nickname };
+
+    public static SessionValidationResult Invalid(string reason) =>
+        new() { Status = SessionValidationStatus.Invalid, ErrorReason = reason };
+
+    public static SessionValidationResult Unavailable(string reason) =>
+        new() { Status = SessionValidationStatus.Unavailable, ErrorReason = reason };
 }
 
 /// <summary>
@@ -104,6 +132,116 @@ internal static class AuthService
         };
 
         return await PostAsync("/auth/confirm-otp", payload);
+    }
+
+    /// <summary>
+    /// Validates the stored session token against the auth worker, sending the
+    /// device HWID so a token stolen from another machine is rejected.
+    /// A 401 (including <c>hwid_mismatch</c>) means the caller must clear the
+    /// local session; network/5xx failures must keep it for a later retry.
+    /// </summary>
+    public static async Task<SessionValidationResult> ValidateSessionAsync(
+        string sessionToken,
+        string hwid)
+    {
+        if (string.IsNullOrWhiteSpace(sessionToken))
+            return SessionValidationResult.Invalid("invalid_or_expired_token");
+
+        try
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get, ApiBaseUrl + "/auth/validate");
+            request.Headers.Authorization =
+                new AuthenticationHeaderValue("Bearer", sessionToken);
+
+            if (!string.IsNullOrWhiteSpace(hwid))
+                request.Headers.TryAddWithoutValidation("X-HWID", hwid);
+
+            using var response = await Http.SendAsync(request);
+            string body = await response.Content.ReadAsStringAsync();
+            ValidateResponse? parsed = TryParseValidate(body);
+
+            if (response.StatusCode == HttpStatusCode.Unauthorized ||
+                response.StatusCode == HttpStatusCode.Forbidden)
+            {
+                return SessionValidationResult.Invalid(
+                    parsed?.Error ?? "invalid_or_expired_token");
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                // 5xx / auth_unavailable: do not log the player out.
+                if ((int)response.StatusCode >= 500)
+                {
+                    return SessionValidationResult.Unavailable(
+                        parsed?.Error ?? "auth_unavailable");
+                }
+
+                return SessionValidationResult.Invalid(
+                    parsed?.Error ?? "invalid_or_expired_token");
+            }
+
+            if (parsed == null || !parsed.Valid)
+            {
+                return SessionValidationResult.Invalid(
+                    parsed?.Error ?? "invalid_or_expired_token");
+            }
+
+            return SessionValidationResult.Valid(parsed.Nickname ?? string.Empty);
+        }
+        catch (TaskCanceledException)
+        {
+            return SessionValidationResult.Unavailable("timeout");
+        }
+        catch (HttpRequestException)
+        {
+            return SessionValidationResult.Unavailable("network");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Auth API /auth/validate", ex);
+            return SessionValidationResult.Unavailable("internal_error");
+        }
+    }
+
+    /// <summary>
+    /// Revokes the session token on the server (POST /auth/logout). Best effort:
+    /// the caller clears local state even when the request cannot be delivered.
+    /// The token is never logged.
+    /// </summary>
+    public static async Task LogoutAsync(string sessionToken)
+    {
+        if (string.IsNullOrWhiteSpace(sessionToken))
+            return;
+
+        try
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post, ApiBaseUrl + "/auth/logout");
+            request.Headers.Authorization =
+                new AuthenticationHeaderValue("Bearer", sessionToken);
+
+            // Short cap: local logout must not wait on a slow auth worker.
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var response = await Http.SendAsync(request, timeout.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                AppLog.Write(
+                    $"Auth API /auth/logout: HTTP {(int)response.StatusCode}");
+            }
+        }
+        catch (TaskCanceledException)
+        {
+            AppLog.Write("Auth API /auth/logout: timeout");
+        }
+        catch (HttpRequestException)
+        {
+            AppLog.Write("Auth API /auth/logout: network");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Auth API /auth/logout", ex);
+        }
     }
 
     private static async Task<AuthResult> PostAsync(string path, object payload)
@@ -216,6 +354,21 @@ internal static class AuthService
         }
     }
 
+    private static ValidateResponse? TryParseValidate(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return null;
+
+        try
+        {
+            return JsonSerializer.Deserialize<ValidateResponse>(body, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     // ------------------------------------------------------------------ HWID
 
     /// <summary>
@@ -298,6 +451,9 @@ internal static class AuthService
         "too_many_attempts" => "Слишком много попыток ввода. Запросите новый код.",
         "invalid_code" => "Неверный код. Проверьте сообщение в Telegram.",
         "invalid_session" => "Сессия недействительна. Запросите код заново.",
+        "invalid_or_expired_token" => "Сессия недействительна или истекла. Войдите заново.",
+        "hwid_mismatch" => "Сессия привязана к другому устройству. Войдите заново.",
+        "auth_unavailable" => "Сервер авторизации недоступен. Повторите попытку позже.",
         "tg_not_started" => $"Бот не может написать вам первым. Откройте @{AuthLinks.FallbackBotUsername} в Telegram, нажмите «Запустить» (/start) и запросите код снова.",
         "tg_delivery_failed" => $"Не удалось отправить код в Telegram. Попробуйте позже или напишите {AuthLinks.AdminContact}.",
         "no_ds_linked" => "К этому аккаунту не привязан Discord. Используйте команду /link в Discord.",
@@ -365,5 +521,17 @@ internal static class AuthService
 
         [JsonPropertyName("bot_username")]
         public string? BotUsername { get; set; }
+    }
+
+    private sealed class ValidateResponse
+    {
+        [JsonPropertyName("valid")]
+        public bool Valid { get; set; }
+
+        [JsonPropertyName("nickname")]
+        public string? Nickname { get; set; }
+
+        [JsonPropertyName("error")]
+        public string? Error { get; set; }
     }
 }

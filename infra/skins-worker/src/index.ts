@@ -10,9 +10,10 @@
 //   POST   /api/skins/upload           -> multipart/form-data, field "file"
 //   DELETE /api/skins                  -> removes the caller's skin
 //
-// Auth contract (placeholder; the auth worker must expose this endpoint):
+// Auth contract (implemented by the auth worker):
 //   GET  ${AUTH_WORKER_URL}/auth/validate
 //        Authorization: Bearer <session_token>
+//        X-HWID: <device id>   (optional; forwarded when the caller sends it)
 //   200  { "valid": true, "nickname": "<MC nickname>" }
 //        ({ "ok": true, "nickname": "..." } is also accepted)
 //   401  anything else
@@ -180,6 +181,15 @@ function parseBearerToken(request: Request): string | null {
   return match ? match[1] : null;
 }
 
+// Device-bound uploads (launcher) send X-HWID; web uploads do not. Forward the
+// header untouched so the auth worker can enforce the HWID binding.
+function parseHwid(request: Request): string | null {
+  const header = request.headers.get("X-HWID");
+  if (!header) return null;
+  const trimmed = header.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 // Validates the bearer token against the auth worker. Fails closed.
 async function authenticate(
   request: Request,
@@ -212,15 +222,19 @@ async function authenticate(
     };
   }
 
+  const hwid = parseHwid(request);
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/json",
+  };
+  if (hwid !== null) headers["X-HWID"] = hwid;
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
   try {
     const response = await fetch(`${baseUrl}/auth/validate`, {
       method: "GET",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-      },
+      headers,
       signal: controller.signal,
     });
 
@@ -559,7 +573,7 @@ function handleOptions(request: Request): Response {
   }
   const headers = corsHeaders(origin);
   headers.set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-  headers.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  headers.set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-HWID");
   headers.set("Access-Control-Max-Age", "86400");
   return new Response(null, { status: 204, headers });
 }

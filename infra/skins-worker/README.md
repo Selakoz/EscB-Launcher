@@ -36,6 +36,7 @@ The worker validates the token by calling:
 ```
 GET ${AUTH_WORKER_URL}/auth/validate
 Authorization: Bearer <session_token>
+X-HWID: <device id>          (optional, forwarded when present)
 ```
 
 Expected `200` body:
@@ -47,12 +48,15 @@ Expected `200` body:
 `{ "ok": true, "nickname": "Steve" }` is accepted too. Any `401`/`403` from the
 auth worker rejects the request.
 
-> **Placeholder:** `infra/auth-worker` does not expose `/auth/validate` yet
-> (it currently only issues `session_token` from `/auth/confirm-otp`). Until that
-> endpoint is added, `AUTH_WORKER_URL` stays empty and uploads/deletes return
-> `503 auth_not_configured` (fail closed). Set the variable in the Dashboard
-> under **Workers → escapebook-skins → Settings → Variables** after the auth
-> worker is updated.
+Device-bound uploads (the launcher) may send `X-HWID`; the worker forwards it
+verbatim so the auth worker can reject a token used on another device
+(`401 hwid_mismatch`). Web uploads without `X-HWID` are validated by token
+alone.
+
+`/auth/validate` is implemented by `infra/auth-worker`. Set `AUTH_WORKER_URL`
+in the Dashboard under **Workers → escapebook-skins → Settings → Variables**.
+While the variable is empty, uploads/deletes fail closed with
+`503 auth_not_configured`.
 
 ## API
 

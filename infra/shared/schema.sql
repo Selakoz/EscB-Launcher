@@ -13,14 +13,23 @@ CREATE TABLE IF NOT EXISTS devices (
     PRIMARY KEY (mc_nickname, hwid),
     FOREIGN KEY (mc_nickname) REFERENCES players(mc_nickname) ON DELETE CASCADE
 );
+-- Session tokens are bound to the device HWID that created them. A successful
+-- login invalidates every previous token for the same player (strict
+-- single-session policy). Tokens expire after 30 days (expires_at, unix seconds).
 CREATE TABLE IF NOT EXISTS sessions (
     token       TEXT PRIMARY KEY,
+    ds_id       TEXT,
+    tg_id       TEXT,
     mc_nickname TEXT NOT NULL,
-    created_at  INTEGER DEFAULT (strftime('%s','now')),
+    hwid        TEXT,
+    created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
     expires_at  INTEGER NOT NULL,
+    is_valid    INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (mc_nickname) REFERENCES players(mc_nickname) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_nickname ON sessions(mc_nickname);
+CREATE INDEX IF NOT EXISTS idx_sessions_ds_id ON sessions(ds_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_tg_id ON sessions(tg_id);
 
 CREATE TABLE IF NOT EXISTS otp_codes (
     mc_nickname TEXT PRIMARY KEY,

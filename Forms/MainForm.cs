@@ -671,16 +671,47 @@ internal sealed class MainForm : BaseDarkForm
             if (IsDisposed)
                 return;
 
+            // Prefer the HWID that created the session (stored in
+            // user_settings.json / auth_session.json); fall back to the value
+            // computed for this machine.
+            string deviceHwid = !string.IsNullOrWhiteSpace(session.HWID)
+                ? session.HWID
+                : (_settings.Hwid ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(deviceHwid))
+                deviceHwid = hwid;
+
+            SessionValidationResult validation =
+                await AuthService.ValidateSessionAsync(session.SessionToken, deviceHwid);
+
+            if (IsDisposed)
+                return;
+
+            if (validation.Status == SessionValidationStatus.Invalid)
+            {
+                // Revoked/expired token or HWID mismatch: drop the token and
+                // the bound nickname, then force a fresh login.
+                SessionManager.ClearSession();
+                ApplyAuthState(false, clearNickname: true);
+                SetStatus("Сессия недействительна — войдите заново", Theme.Warning);
+                return;
+            }
+
+            if (validation.Status == SessionValidationStatus.Valid)
+            {
+                string nickname = string.IsNullOrWhiteSpace(validation.Nickname)
+                    ? session.McNickname
+                    : validation.Nickname;
+
+                BackfillSessionAuth(session.SessionToken, deviceHwid);
+                ApplyAuthState(true, nickname);
+                return;
+            }
+
+            // Auth server unavailable: keep the existing offline behaviour and
+            // trust the locally stored HWID instead of logging the player out.
             if (string.Equals(session.HWID, hwid, StringComparison.Ordinal))
             {
-                // Backfill session_token in user_settings.json for installs that
-                // authorized before the field existed. Never logged.
-                if (!string.Equals(_settings.SessionToken, session.SessionToken, StringComparison.Ordinal))
-                {
-                    _settings.SessionToken = session.SessionToken;
-                    _session.Save();
-                }
-
+                BackfillSessionAuth(session.SessionToken, deviceHwid);
                 ApplyAuthState(true, session.McNickname);
             }
         }
@@ -688,6 +719,23 @@ internal sealed class MainForm : BaseDarkForm
         {
             AppLog.Error("Auth state init", ex);
         }
+    }
+
+    /// <summary>
+    /// Mirrors the session token + HWID into user_settings.json for installs
+    /// that authorized before one of the fields existed. Never logged.
+    /// </summary>
+    private void BackfillSessionAuth(string sessionToken, string hwid)
+    {
+        if (string.Equals(_settings.SessionToken, sessionToken, StringComparison.Ordinal) &&
+            string.Equals(_settings.Hwid, hwid, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _settings.SessionToken = sessionToken;
+        _settings.Hwid = hwid;
+        _session.Save();
     }
 
     /// <summary>
@@ -761,12 +809,16 @@ internal sealed class MainForm : BaseDarkForm
         SessionData? session = SessionManager.LoadSession();
 
         // Keep the shared in-memory settings instance in sync with the token
-        // already persisted by SessionManager, so a later settings auto-save
-        // cannot overwrite it with a stale value. The token is never logged.
+        // and HWID already persisted by SessionManager, so a later settings
+        // auto-save cannot overwrite them with stale values. Neither value is
+        // ever logged.
         string sessionToken = session?.SessionToken ?? string.Empty;
-        if (!string.Equals(_settings.SessionToken, sessionToken, StringComparison.Ordinal))
+        string sessionHwid = session?.HWID ?? string.Empty;
+        if (!string.Equals(_settings.SessionToken, sessionToken, StringComparison.Ordinal) ||
+            !string.Equals(_settings.Hwid, sessionHwid, StringComparison.Ordinal))
         {
             _settings.SessionToken = sessionToken;
+            _settings.Hwid = sessionHwid;
             _session.SaveSoon();
         }
 
@@ -1044,9 +1096,22 @@ internal sealed class MainForm : BaseDarkForm
         dialog.ShowDialog(this);
     }
 
-    private void PerformLogout()
+    private async void PerformLogout()
     {
+        // Revoke the token server-side first; local state is cleared even when
+        // the auth worker cannot be reached. The token is never logged.
+        string token = SessionManager.LoadSession()?.SessionToken ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(token))
+            token = _settings.SessionToken;
+
+        if (!string.IsNullOrWhiteSpace(token))
+            await AuthService.LogoutAsync(token);
+
         SessionManager.ClearSession();
+
+        if (IsDisposed)
+            return;
+
         ApplyAuthState(false, clearNickname: true);
         SetStatus("Вы вышли из аккаунта", Theme.Muted);
     }
@@ -1502,6 +1567,39 @@ internal sealed class MainForm : BaseDarkForm
             SetStatus("Никнейм: 3–16 символов (A-Z, 0-9, _)", Theme.Danger);
             _nickBox.InnerTextBox.Focus();
             return;
+        }
+
+        // Server-side session check before every launch: a token revoked by a
+        // newer login or bound to another device forces re-login. A temporary
+        // auth-server/network failure must not block the launch.
+        SessionData? authSession = SessionManager.LoadSession();
+        if (authSession != null)
+        {
+            string deviceHwid = !string.IsNullOrWhiteSpace(authSession.HWID)
+                ? authSession.HWID
+                : (_settings.Hwid ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(deviceHwid))
+                deviceHwid = await Task.Run(AuthService.GetHWID);
+
+            SessionValidationResult validation =
+                await AuthService.ValidateSessionAsync(authSession.SessionToken, deviceHwid);
+
+            if (IsDisposed)
+                return;
+
+            if (validation.Status == SessionValidationStatus.Invalid)
+            {
+                SessionManager.ClearSession();
+                ApplyAuthState(false, clearNickname: true);
+                SetStatus("Сессия недействительна — войдите заново", Theme.Danger);
+                return;
+            }
+
+            if (validation.Status == SessionValidationStatus.Valid &&
+                !string.IsNullOrWhiteSpace(validation.Nickname))
+            {
+                _authMcNickname = validation.Nickname.Trim();
+            }
         }
 
         _settings.Nickname = nickname;

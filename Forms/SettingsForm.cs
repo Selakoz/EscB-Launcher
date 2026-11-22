@@ -1060,10 +1060,20 @@ internal sealed class SettingsForm : BaseDarkForm
     /// switches back to the unauthorized state (non-intrusive flow — no modal
     /// re-auth dialog and no application exit).
     /// </summary>
-    private void HandleLogout()
+    private async void HandleLogout()
     {
+        // Revoke the token on the server, then remove it locally. The request
+        // is best effort: local logout must work even when offline.
+        string token = SessionManager.LoadSession()?.SessionToken ?? _settings.SessionToken;
+        if (!string.IsNullOrWhiteSpace(token))
+            await AuthService.LogoutAsync(token);
+
         SessionManager.ClearSession();
         _session.Save();
+
+        if (IsDisposed)
+            return;
+
         LogoutRequested = true;
         Close();
     }

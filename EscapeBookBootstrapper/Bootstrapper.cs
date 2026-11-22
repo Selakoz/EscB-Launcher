@@ -284,13 +284,14 @@ namespace EscapeBookBootstrapper
 
         /// <summary>
         /// Файлы, которые переустановка оставляет на месте: настройки игрока,
-        /// кэш конфига, сам загрузчик/обновлятор и журналы.
+        /// сам загрузчик/обновлятор и журналы. Кэш конфига и маркеры версий
+        /// инстансов здесь намеренно отсутствуют — они сбрасываются, чтобы
+        /// клиент скачался заново по свежему config.json.
         /// </summary>
         private static readonly HashSet<string> ReinstallPreservedFiles =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             {
                 "user_settings.json",
-                ".launcher_config.json",
                 UpdaterExecutableName,
                 "EscapeBookBootstrapper.exe",
                 "bootstrapper.log",
@@ -298,14 +299,31 @@ namespace EscapeBookBootstrapper
             };
 
         /// <summary>
+        /// Маркеры установленной версии внутри папки инстанса. Их удаление
+        /// заставляет лаунчер перекачать сборку. Пользовательские данные
+        /// (<c>user_settings.json</c>, <c>options.txt</c>, <c>mods/</c>,
+        /// <c>logs/</c>, миры) не затрагиваются.
+        /// </summary>
+        private static readonly string[] InstanceVersionMarkers =
+        {
+            ".client_version",
+            ".client_zip_url",
+            "version.txt"
+        };
+
+        /// <summary>
         /// Режим «Переустановить»: очищает папку лаунчера, не трогая
-        /// пользовательские настройки и папку <c>instances</c>, и сбрасывает
-        /// маркеры версий, чтобы обычный поток загрузчика скачал свежий
-        /// <c>EscBClient.zip</c>.
+        /// пользовательские данные в <c>instances</c>, и сбрасывает кэш
+        /// конфига и маркеры версий, чтобы обычный поток загрузчика скачал
+        /// свежий <c>EscBClient.zip</c> и сборки по актуальному config.json.
         /// </summary>
         public static void ReinstallLauncher()
         {
-            string launcherDirectory = Path.Combine(InstallPathConfig.GetBasePath(), "launcher");
+            // Корень читаем из install_path.txt напрямую: меню показывается
+            // до InitializeInstallRoot(), поэтому статический RootDirectory
+            // может ещё не совпадать с выбранным путём установки.
+            string rootDirectory = InstallPathConfig.GetBasePath();
+            string launcherDirectory = Path.Combine(rootDirectory, "launcher");
 
             int deleted = 0;
             int renamed = 0;
@@ -377,6 +395,16 @@ namespace EscapeBookBootstrapper
             TryDeleteFile(Path.Combine(launcherDirectory, ".bootstrapper_version"));
             TryDeleteFile(Path.Combine(launcherDirectory, ".updater_version"));
 
+            // Кэш удалённого конфига лежит в корне данных, а не в launcher/.
+            // Без его удаления свежескачанный клиент продолжит брать старые
+            // URL сборок и получит 404. Кэш пересоздастся при первом запуске.
+            TryDeleteOrRenameFile(Path.Combine(rootDirectory, ".launcher_config.json"));
+
+            // Маркеры версий инстансов: без них лаунчер считает сборки уже
+            // установленными и не перекачивает их по свежему конфигу.
+            // Моды, логи, миры и настройки игрока остаются на месте.
+            ClearInstanceVersionMarkers(rootDirectory);
+
             Log("Переустановка: папка лаунчера очищена (удалено " +
                 deleted + ", отложено " + renamed + ").");
 
@@ -385,6 +413,79 @@ namespace EscapeBookBootstrapper
                 "Переустановка",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
+        }
+
+        /// <summary>
+        /// Сбрасывает маркеры установленной версии во всех инстансах, чтобы
+        /// обычный поток загрузчика перекачал сборки по актуальному конфигу.
+        /// Удаляются только маркеры в корне инстанса; <c>mods/</c>, <c>logs/</c>,
+        /// миры и настройки не затрагиваются.
+        /// </summary>
+        private static void ClearInstanceVersionMarkers(string rootDirectory)
+        {
+            try
+            {
+                string instancesDirectory = Path.Combine(rootDirectory, "instances");
+                if (!Directory.Exists(instancesDirectory))
+                    return;
+
+                int cleared = 0;
+
+                foreach (string instanceDirectory in Directory.GetDirectories(instancesDirectory))
+                {
+                    foreach (string marker in InstanceVersionMarkers)
+                    {
+                        string markerPath = Path.Combine(instanceDirectory, marker);
+                        if (!File.Exists(markerPath))
+                            continue;
+
+                        TryDeleteOrRenameFile(markerPath);
+
+                        if (!File.Exists(markerPath))
+                            cleared++;
+                    }
+                }
+
+                Log("Переустановка: сброшено маркеров версий инстансов: " + cleared + ".");
+            }
+            catch (Exception ex)
+            {
+                Log("Переустановка: не удалось сбросить маркеры инстансов: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Удаляет файл, а если он занят — переименовывает в <c>.old</c>,
+        /// чтобы устаревший маркер не читался при следующем запуске.
+        /// </summary>
+        private static void TryDeleteOrRenameFile(string path)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                    return;
+
+                File.Delete(path);
+                return;
+            }
+            catch
+            {
+                // Файл занят — пробуем переименовать ниже.
+            }
+
+            try
+            {
+                string backupPath = path + ".old";
+                TryDeleteFile(backupPath);
+
+                if (File.Exists(path))
+                    File.Move(path, backupPath);
+            }
+            catch
+            {
+                // Не удалось ни удалить, ни переименовать: файл останется,
+                // но переустановка продолжится.
+            }
         }
 
         /// <summary>

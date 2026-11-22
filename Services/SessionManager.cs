@@ -59,9 +59,10 @@ internal static class SessionManager
             File.WriteAllText(tempPath, json);
             File.Move(tempPath, LauncherPaths.AuthSessionFile, overwrite: true);
 
-            // Mirror the token into user_settings.json immediately so external
-            // tools (e.g. the skin upload page) can read it. Never logged.
-            PersistSessionToken(sessionToken);
+            // Mirror the token + HWID into user_settings.json immediately so
+            // external tools (e.g. the skin upload page) can read them.
+            // Neither value is ever logged.
+            PersistSessionAuth(sessionToken, hwid);
 
             RaiseAuthChanged();
         }
@@ -122,38 +123,43 @@ internal static class SessionManager
         // handler would load the old file and re-authorize the window.
         if (cleared)
         {
-            // Remove the token from user_settings.json as well so external
-            // tools cannot keep using a logged-out session.
-            PersistSessionToken(string.Empty);
+            // Remove the token + HWID from user_settings.json as well so
+            // external tools cannot keep using a logged-out session.
+            PersistSessionAuth(string.Empty, string.Empty);
             RaiseAuthChanged();
         }
     }
 
     /// <summary>
-    /// Writes (or clears, when <paramref name="sessionToken"/> is empty) the
-    /// <c>session_token</c> field in user_settings.json. The token value is
-    /// secret and must never be written to the log.
+    /// Writes (or clears, when the values are empty) the <c>session_token</c>
+    /// and <c>hwid</c> fields in user_settings.json. Both values are secret and
+    /// must never be written to the log.
     /// </summary>
-    private static void PersistSessionToken(string sessionToken)
+    private static void PersistSessionAuth(string sessionToken, string hwid)
     {
         try
         {
             UserSettings settings = SettingsService.Load();
 
-            if (string.Equals(settings.SessionToken, sessionToken, StringComparison.Ordinal))
+            bool changed =
+                !string.Equals(settings.SessionToken, sessionToken, StringComparison.Ordinal) ||
+                !string.Equals(settings.Hwid, hwid, StringComparison.Ordinal);
+
+            if (!changed)
                 return;
 
             settings.SessionToken = sessionToken;
+            settings.Hwid = hwid;
 
             if (!SettingsService.TrySave(settings, out string? error) &&
                 !string.IsNullOrEmpty(error))
             {
-                AppLog.Write("Session token settings save warning: " + error);
+                AppLog.Write("Session auth settings save warning: " + error);
             }
         }
         catch (Exception ex)
         {
-            AppLog.Error("Session token settings persist", ex);
+            AppLog.Error("Session auth settings persist", ex);
         }
     }
 

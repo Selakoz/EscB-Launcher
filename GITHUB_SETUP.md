@@ -207,6 +207,12 @@ https://github.com/ВАШ_АККАУНТ/escapebook-launcher/releases/download/v
 
 Вставьте её в поле `client_zip_url` нужной сборки в `config.json`.
 
+Версия сборки в выпадающем списке лаунчера берётся из тега релиза в этой ссылке
+(`releases/download/vX.Y.Z/...`) — отдельно редактировать `version` не нужно:
+при смене тега в `client_zip_url` отображаемая версия обновится сама. Поле
+`mc_version` **внутреннее**: CmlLib использует его для выбора версии Minecraft,
+и в интерфейсе оно не показывается.
+
 ## 7. Подготовьте и загрузите баннер
 
 Баннер — карта `1920 × 480` (соотношение 4:1), формат PNG с прозрачностью.
@@ -393,6 +399,13 @@ RID (`-r`) не указывается: .NET Framework не использует
    необходимости скачивает и устанавливает обновление, затем запускает клиент.
 6. Если GitHub недоступен — запускает уже установленный клиент; ошибки пишутся в
    `%APPDATA%\.escapebook\launcher\bootstrapper.log` (обновлятор — в `updater.log`).
+7. Конфигурация кэшируется в `%APPDATA%\.escapebook\.launcher_config.json`
+   на 6 часов. По истечении TTL клиент сам перезапрашивает `config.json`
+   (при недоступности сети используется сохранённая копия), поэтому
+   исправленный `client_zip_url` применяется без переустановки. Пункт меню
+   «Переустановить» дополнительно удаляет кэш конфига и маркеры версий
+   инстансов (`.client_version`, `.client_zip_url`, `version.txt`), гарантируя
+   скачивание сборок по свежему конфигу без 404.
 
 Важно: чтобы выпустить обновление, достаточно создать новый релиз с новым тегом
 (`v1.0.1`, `v1.0.2`, …) и приложить к нему новый `EscBClient.zip`.
@@ -453,6 +466,74 @@ Dashboard → Workers → `escapebook-auth` → Settings → Variables and Secre
 Итог: чтобы DS→TG не сломался после деплоя, `TG_CHAT_ID` живёт в
 GitHub-секрете, а не в Dashboard Variable.
 
+## 15. Безопасные сессии: HWID и одна активная сессия
 
+Каждый токен сессии привязан к устройству (HWID) и действует **30 дней**.
+Успешный вход инвалидирует **все** предыдущие токены игрока (строгая политика
+«одно активное устройство»). Украденный токен без совпадающего `hwid` не работает.
+
+### 15.1. Схема `sessions`
+
+Таблица создаётся из `infra/shared/schema.sql` (новая установка) или миграцией
+`infra/shared/migrations/003_sessions_hwid.sql` (существующая база):
+
+```sql
+ALTER TABLE sessions ADD COLUMN ds_id TEXT;
+ALTER TABLE sessions ADD COLUMN tg_id TEXT;
+ALTER TABLE sessions ADD COLUMN hwid TEXT;
+ALTER TABLE sessions ADD COLUMN is_valid INTEGER NOT NULL DEFAULT 1;
+```
+
+Применить один раз (SQLite не поддерживает `ADD COLUMN IF NOT EXISTS`):
+
+```powershell
+npx wrangler d1 execute escapebook-db --remote --file=infra/shared/migrations/003_sessions_hwid.sql
+```
+
+Итоговая структура:
+
+| Колонка | Назначение |
+| --- | --- |
+| `token` | Первичный ключ (32 hex). |
+| `ds_id`, `tg_id` | Привязанные Discord/Telegram ID (TEXT). |
+| `mc_nickname` | Владелец сессии. |
+| `hwid` | 32-hex идентификатор устройства, создавшего токен. |
+| `created_at`, `expires_at` | Unix-время; срок жизни 30 дней. |
+| `is_valid` | `1` — активна, `0` — отозвана/заменена. |
+
+### 15.2. Endpoint'ы `escapebook-auth`
+
+- `POST /auth/confirm-otp` — тело `{mc_nickname, code, hwid}` (HWID также можно
+  передать заголовком `X-HWID`). После успешного OTP воркер:
+  1. отзывает все активные сессии игрока (`is_valid = 0`);
+  2. вставляет новый токен с `hwid`, `ds_id`, `tg_id` и `expires_at = now + 30d`;
+  3. возвращает `{ok:true, session_token}`.
+- `GET /auth/validate` — `Authorization: Bearer <token>` и необязательный
+  `X-HWID`:
+  - нет строки / `is_valid = 0` / истёк срок → `401 {valid:false,
+    error:"invalid_or_expired_token"}`;
+  - `X-HWID` передан и не совпадает с сохранённым → `401 {valid:false,
+    error:"hwid_mismatch"}`;
+  - `X-HWID` не передан (веб-загрузка скина) → достаточно валидного токена;
+  - успех → `200 {valid:true, nickname}`;
+  - ошибка D1 → `503 {ok:false, error:"auth_unavailable"}`.
+- `POST /auth/logout` — `Authorization: Bearer <token>`; ставит `is_valid = 0`
+  и возвращает `{ok:true}`.
+
+CORS воркера разрешает заголовки `Authorization` и `X-HWID`, поэтому
+`escapebook-skins` может вызывать `/auth/validate` из браузера.
+
+### 15.3. Поведение лаунчера
+
+- `session_token` и `hwid` дублируются в `user_settings.json` (секреты никогда
+  не пишутся в лог).
+- При старте и перед каждым запуском игры лаунчер вызывает `/auth/validate`
+  с `Authorization` + `X-HWID`.
+- Ответ `401` (включая `hwid_mismatch`) очищает токен и привязанный никнейм и
+  требует повторный вход. Сетевые ошибки и `503` не разлогинивают игрока.
+- «Выйти из аккаунта» сначала вызывает `/auth/logout`, затем очищает локальную
+  сессию (даже если воркер недоступен).
+- `escapebook-skins` пробрасывает входящий `X-HWID` в `/auth/validate`: загрузка
+  из лаунчера проверяется по устройству, веб-загрузка — только по токену.
 
 

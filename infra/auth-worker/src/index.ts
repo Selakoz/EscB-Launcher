@@ -54,6 +54,13 @@ interface RateLimitRow {
   window_end: number;
 }
 
+interface SessionRow {
+  mc_nickname: string;
+  hwid: string | null;
+  expires_at: number;
+  is_valid: number;
+}
+
 // Session lifetime: 30 days. Session tokens are stored in the `sessions`
 // table so they can be validated later (GET /auth/validate).
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -70,6 +77,7 @@ const ROUTES: Record<string, string> = {
   "/auth/register-device": "POST",
   "/auth/links": "POST",
   "/auth/validate": "GET",
+  "/auth/logout": "POST",
   "/auth/request-otp-discord": "POST",
   "/admin/ban": "POST",
   "/admin/unban": "POST",
@@ -80,7 +88,7 @@ const ROUTES: Record<string, string> = {
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-HWID",
 };
 
 function nowSeconds(): number {
@@ -100,6 +108,16 @@ function ok(extra: Record<string, unknown> = {}): Response {
 
 function fail(reason: string, status = 200): Response {
   return json({ ok: false, reason }, status);
+}
+
+// Extracts the token from "Authorization: Bearer <token>".
+// Token values are never logged.
+function parseBearerToken(request: Request): string {
+  const header = request.headers.get("Authorization") || "";
+  if (header.toLowerCase().startsWith("bearer ")) {
+    return header.slice(7).trim();
+  }
+  return "";
 }
 
 // Generate a 32-char hex session token using the Workers crypto API.
@@ -453,15 +471,32 @@ async function handleRequestOtpDiscord(request: Request, env: Env): Promise<Resp
 }
 
 // POST /auth/confirm-otp — body: {mc_nickname, code, hwid}
+// The HWID may also be supplied via the X-HWID header.
 async function handleConfirmOTP(request: Request, env: Env): Promise<Response> {
   const body = await readJsonBody(request);
   if (!body) return fail("invalid_json", 400);
 
-  const { mc_nickname, code, hwid } = body;
+  const { mc_nickname, code } = body;
+  let hwid = body.hwid;
   if (typeof mc_nickname !== "string" || !NICKNAME_RE.test(mc_nickname)) {
     return fail("invalid_nickname");
   }
   if (typeof code !== "string" || code.length === 0) {
+    return fail("invalid_request");
+  }
+
+  // Header fallback: a client may send the device ID as X-HWID instead of
+  // embedding it in the JSON body.
+  if (typeof hwid !== "string" || hwid.length === 0) {
+    const headerHwid = request.headers.get("X-HWID");
+    if (typeof headerHwid === "string" && headerHwid.trim().length > 0) {
+      hwid = headerHwid.trim();
+    }
+  }
+
+  // Every session must be bound to a device: a token without HWID would be
+  // usable from anywhere, which defeats the security model.
+  if (typeof hwid !== "string" || hwid.length === 0) {
     return fail("invalid_request");
   }
 
@@ -507,13 +542,41 @@ async function handleConfirmOTP(request: Request, env: Env): Promise<Response> {
       .run();
   }
 
+  // Re-check the player (a banned/removed account must not receive a token)
+  // and read the linked IDs stored alongside the session.
+  const player = await env.DB.prepare(
+    "SELECT ds_id, tg_id, is_banned FROM players WHERE mc_nickname = ?"
+  )
+    .bind(mc_nickname)
+    .first<{ ds_id: string | null; tg_id: string | null; is_banned: number }>();
+  if (!player) return fail("player_not_found");
+  if (Number(player.is_banned) === 1) return fail("banned");
+
+  // STRICT single-session policy: a successful login invalidates every
+  // previous token for this player (one active device at a time).
+  await env.DB.prepare(
+    "UPDATE sessions SET is_valid = 0 WHERE is_valid = 1 AND (mc_nickname = ? OR ds_id = ? OR tg_id = ?)"
+  )
+    .bind(mc_nickname, player.ds_id ?? null, player.tg_id ?? null)
+    .run();
+
   const sessionToken = generateSessionToken();
 
-  // Persist the session so it can be validated by GET /auth/validate.
+  // Persist the session bound to this device's HWID (30-day TTL) so it can be
+  // validated later by GET /auth/validate.
   await env.DB.prepare(
-    "INSERT INTO sessions (token, mc_nickname, created_at, expires_at) VALUES (?, ?, ?, ?)"
+    "INSERT INTO sessions (token, ds_id, tg_id, mc_nickname, hwid, created_at, expires_at, is_valid) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, 1)"
   )
-    .bind(sessionToken, mc_nickname, now, now + SESSION_TTL_SECONDS)
+    .bind(
+      sessionToken,
+      player.ds_id ?? null,
+      player.tg_id ?? null,
+      mc_nickname,
+      hwid,
+      now,
+      now + SESSION_TTL_SECONDS
+    )
     .run();
 
   // The OTP is single-use: delete it right after a successful confirmation.
@@ -604,36 +667,87 @@ async function handleLinks(request: Request, env: Env): Promise<Response> {
 }
 
 // GET /auth/validate — Authorization: Bearer <session_token>
-// Used by other workers (e.g. skins uploads) to verify a session without
-// touching the OTP flow. Returns {valid: true, nickname} or 401.
+// Optional header: X-HWID: <device id>
+// Used by the launcher and other workers (e.g. skins uploads) to verify a
+// session without touching the OTP flow.
+//
+// Rules:
+//   - missing/expired/revoked token -> 401 invalid_or_expired_token
+//   - X-HWID present and != stored HWID -> 401 hwid_mismatch
+//   - X-HWID absent (web uploads) -> token validity alone is enough
+//   - database failure -> 503 auth_unavailable
 async function handleValidate(request: Request, env: Env): Promise<Response> {
-  let token = "";
-  const header = request.headers.get("Authorization") || "";
-  if (header.toLowerCase().startsWith("bearer ")) {
-    token = header.slice(7).trim();
-  }
+  const token = parseBearerToken(request);
   if (token.length === 0) {
-    return json({ valid: false, error: "invalid_or_missing_token" }, 401);
+    return json({ valid: false, error: "invalid_or_expired_token" }, 401);
   }
+
+  const requestHwid = request.headers.get("X-HWID");
+  const hwidHeader =
+    typeof requestHwid === "string" && requestHwid.trim().length > 0
+      ? requestHwid.trim()
+      : null;
 
   try {
     const session = await env.DB.prepare(
-      "SELECT s.mc_nickname FROM sessions s " +
-        "JOIN players p ON p.mc_nickname = s.mc_nickname " +
-        "WHERE s.token = ? AND s.expires_at > ? AND p.is_banned = 0"
+      "SELECT mc_nickname, hwid, expires_at, is_valid FROM sessions WHERE token = ?"
     )
-      .bind(token, nowSeconds())
-      .first<{ mc_nickname: string }>();
+      .bind(token)
+      .first<SessionRow>();
 
-    if (!session) {
-      return json({ valid: false, error: "invalid_or_missing_token" }, 401);
+    const now = nowSeconds();
+    if (
+      !session ||
+      Number(session.is_valid) !== 1 ||
+      Number(session.expires_at) <= now
+    ) {
+      return json({ valid: false, error: "invalid_or_expired_token" }, 401);
+    }
+
+    // A device-bound check only applies when the caller presents an HWID.
+    // Stored HWID is compared byte-for-byte (both are 32-hex strings).
+    if (hwidHeader !== null && hwidHeader !== (session.hwid ?? "")) {
+      return json({ valid: false, error: "hwid_mismatch" }, 401);
+    }
+
+    // Banned players keep losing access even with a technically valid token.
+    const player = await env.DB.prepare(
+      "SELECT is_banned FROM players WHERE mc_nickname = ?"
+    )
+      .bind(session.mc_nickname)
+      .first<{ is_banned: number }>();
+    if (!player || Number(player.is_banned) === 1) {
+      return json({ valid: false, error: "invalid_or_expired_token" }, 401);
     }
 
     return json({ valid: true, nickname: session.mc_nickname });
   } catch (err) {
-    // Never log the token itself; the error class is enough.
+    // Never log the token or the HWID; the error class is enough.
     console.error("auth-worker: session validation failed:", String(err));
-    return json({ valid: false, error: "invalid_or_missing_token" }, 401);
+    return json({ ok: false, error: "auth_unavailable" }, 503);
+  }
+}
+
+// POST /auth/logout — Authorization: Bearer <session_token>
+// Revokes the token immediately. Idempotent: an unknown token still returns
+// {ok:true} so a logout never fails on the client.
+async function handleLogout(request: Request, env: Env): Promise<Response> {
+  const token = parseBearerToken(request);
+  if (token.length === 0) {
+    return json({ ok: false, error: "invalid_or_missing_token" }, 401);
+  }
+
+  try {
+    await env.DB.prepare(
+      "UPDATE sessions SET is_valid = 0 WHERE token = ?"
+    )
+      .bind(token)
+      .run();
+    return ok();
+  } catch (err) {
+    // Never log the token itself.
+    console.error("auth-worker: logout failed:", String(err));
+    return json({ ok: false, error: "auth_unavailable" }, 503);
   }
 }
 
@@ -784,6 +898,8 @@ export default {
           return await handleRequestOtpDiscord(request, env);
         case "/auth/validate":
           return await handleValidate(request, env);
+        case "/auth/logout":
+          return await handleLogout(request, env);
         case "/admin/ban":
           return await handleBan(request, env);
         case "/admin/unban":

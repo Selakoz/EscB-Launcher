@@ -6,11 +6,17 @@ namespace EscapeBook.Services;
 internal sealed class ConfigService
 {
     /// <summary>
-    /// Remote launcher configuration. This is the only source of build URLs:
-    /// there is intentionally no local/cached/hardcoded fallback.
+    /// Remote launcher configuration. This is the source of build URLs.
     /// </summary>
     public const string CONFIG_URL =
         "https://raw.githubusercontent.com/Selakoz/EscB-Launcher/main/config.json";
+
+    /// <summary>
+    /// Maximum age of the local configuration cache. A newer cache is reused
+    /// without a network request; an older one is refreshed silently, so a
+    /// corrected URL in <c>config.json</c> reaches players automatically.
+    /// </summary>
+    public const int ConfigCacheMaxAgeHours = 6;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -31,6 +37,18 @@ internal sealed class ConfigService
         CancellationToken cancellationToken)
     {
         progress.Report(new LaunchProgress(2, "Загрузка конфигурации с GitHub..."));
+
+        // A fresh local cache avoids a network round-trip on every launch.
+        // Missing/corrupted entries and entries older than the TTL fall through
+        // to a real download, which is how stale build URLs self-heal.
+        LauncherConfig? cachedConfig = TryLoadCachedConfig(requireFresh: true);
+        if (cachedConfig != null)
+        {
+            AppLog.Write(
+                $"Config loaded from local cache (<= {ConfigCacheMaxAgeHours} h): " +
+                $"builds={cachedConfig.Builds.Count}, jvmPreset={cachedConfig.JvmPresetVersion}");
+            return cachedConfig;
+        }
 
         string json;
 
@@ -53,6 +71,13 @@ internal sealed class ConfigService
         }
         catch (OperationCanceledException ex)
         {
+            LauncherConfig? fallback = TryLoadCachedConfig(requireFresh: false);
+            if (fallback != null)
+            {
+                AppLog.Write("Config download timed out; using cached config: " + ex.Message);
+                return fallback;
+            }
+
             throw new InvalidOperationException(
                 "Ошибка: не удалось загрузить свежий config.json с GitHub (таймаут 20 секунд).\n" +
                 $"URL: {CONFIG_URL}",
@@ -61,6 +86,14 @@ internal sealed class ConfigService
         catch (Exception ex)
         {
             AppLog.Error("Config download", ex);
+
+            LauncherConfig? fallback = TryLoadCachedConfig(requireFresh: false);
+            if (fallback != null)
+            {
+                AppLog.Write("Config download failed; using cached config: " + ex.Message);
+                return fallback;
+            }
+
             throw new InvalidOperationException(
                 "Ошибка: не удалось загрузить свежий config.json с GitHub.\n" +
                 $"URL: {CONFIG_URL}\n" +
@@ -68,15 +101,13 @@ internal sealed class ConfigService
                 ex);
         }
 
-        // The cache is write-only (kept for diagnostics). It is never read as a
-        // fallback, so a stale or corrupted .launcher_config.json can never
-        // override the freshly downloaded remote configuration.
         LauncherConfig config = Deserialize(json);
 
         try
         {
             LauncherPaths.EnsureRoot();
             await File.WriteAllTextAsync(LauncherPaths.ConfigCacheFile, json, CancellationToken.None);
+            File.SetLastWriteTimeUtc(LauncherPaths.ConfigCacheFile, DateTime.UtcNow);
         }
         catch (Exception cacheError)
         {
@@ -87,6 +118,48 @@ internal sealed class ConfigService
             $"Config loaded from GitHub: builds={config.Builds.Count}, " +
             $"jvmPreset={config.JvmPresetVersion}");
         return config;
+    }
+
+    /// <summary>
+    /// Reads the local configuration cache. When <paramref name="requireFresh"/>
+    /// is set, an entry older than <see cref="ConfigCacheMaxAgeHours"/> is
+    /// treated as missing so the caller re-downloads it. Any read/parse failure
+    /// also returns null instead of surfacing to the UI.
+    /// </summary>
+    private static LauncherConfig? TryLoadCachedConfig(bool requireFresh)
+    {
+        try
+        {
+            string cacheFile = LauncherPaths.ConfigCacheFile;
+
+            if (!File.Exists(cacheFile))
+                return null;
+
+            if (requireFresh)
+            {
+                DateTime lastWriteUtc = File.GetLastWriteTimeUtc(cacheFile);
+                TimeSpan age = DateTime.UtcNow - lastWriteUtc;
+
+                if (age > TimeSpan.FromHours(ConfigCacheMaxAgeHours))
+                {
+                    AppLog.Write(
+                        $"Config cache is stale ({age.TotalHours:F1} h > " +
+                        $"{ConfigCacheMaxAgeHours} h); re-downloading.");
+                    return null;
+                }
+            }
+
+            string json = File.ReadAllText(cacheFile);
+            if (string.IsNullOrWhiteSpace(json))
+                return null;
+
+            return Deserialize(json);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("Config cache read failed: " + ex.Message);
+            return null;
+        }
     }
 
     private static LauncherConfig Deserialize(string json)

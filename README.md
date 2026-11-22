@@ -132,6 +132,12 @@ dotnet publish EscapeBookBootstrapper/EscapeBookBootstrapper.csproj -c Release -
 | `builds[]` | Список сборок: `id`, `name`, `mc_version`, `version`, `client_zip_url`. |
 | `optional_mods[]` | Доп. моды: `name`, `description`, `file_prefixes`, `enabled_by_default`. |
 
+В выпадающем списке версия сборки берётся из тега релиза в `client_zip_url`
+(`.../releases/download/vX.Y.Z/...`) и показывается автоматически, без ручного
+редактирования поля `version`. Поле `mc_version` **внутреннее**: оно нужно CmlLib
+для выбора версии игры и в интерфейсе не отображается. Если в URL нет тега
+релиза, используется `version`, а при его отсутствии — `v?`.
+
 ### Поля user_settings.json
 
 | Поле | Назначение |
@@ -151,7 +157,7 @@ dotnet publish EscapeBookBootstrapper/EscapeBookBootstrapper.csproj -c Release -
 %APPDATA%\.escapebook\
 ├── user_settings.json          настройки игрока
 ├── launcher.log                журнал основного лаунчера
-├── .launcher_config.json       кэш удалённого конфига
+├── .launcher_config.json       кэш удалённого конфига (TTL 6 ч)
 ├── assets\banner.png           баннер (встроенный или скачанный)
 ├── launcher\                   установленный клиент (управляет bootstrapper)
 │   ├── EscBClient.exe
@@ -174,6 +180,17 @@ dotnet publish EscapeBookBootstrapper/EscapeBookBootstrapper.csproj -c Release -
 При обновлении клиента загрузчик (и `EscBUpdater.exe`) сначала полностью
 очищают папку `launcher` от файлов прошлой версии, сохраняя `user_settings.json`,
 `.launcher_config.json`, сам обновлятор и папку `instances/`.
+
+Кэш `.launcher_config.json` считается актуальным 6 часов. Если он старше,
+лаунчер тихо перезапрашивает `config.json` с GitHub (при ошибке сети
+используется сохранённая копия), поэтому исправленные URL сборок
+подхватываются автоматически.
+
+Режим «Переустановить» в загрузчике дополнительно удаляет
+`.launcher_config.json` и маркеры версий во всех инстансах
+(`.client_version`, `.client_zip_url`, `version.txt`), чтобы сборки
+перекачались по свежему конфигу. `user_settings.json`, `options.txt`, `mods/`,
+`logs/` и миры не удаляются.
 
 ## JVM-аргументы
 
