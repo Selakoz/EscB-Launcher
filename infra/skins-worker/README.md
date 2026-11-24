@@ -3,9 +3,10 @@
 Cloudflare Worker that stores player Minecraft skins **directly in D1** as BLOBs.
 No R2, no external object storage, no credit card.
 
-- Public: `GET /api/skins/:nickname.png`, `GET /api/skins/:nickname/info`
+- Public: `GET /api/skins/:nickname.png`, `GET /api/skins/:nickname.json`,
+  `GET /api/skins/:nickname/info`
 - Authenticated: `POST /api/skins/upload`, `DELETE /api/skins`
-- CORS: `https://escapebook.site` only
+- CORS: `*` for public GETs; upload/delete restricted to `https://escapebook.site`
 - Limits: PNG only, max 1 MB, 64x64 or 64x32
 
 ## One-time D1 setup
@@ -70,6 +71,7 @@ missing`).
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `GET` | `/api/skins/:nickname.png` | no | Skin PNG, or the default Steve skin |
+| `GET` | `/api/skins/:nickname.json` | no | CustomSkinLoader profile (see below) |
 | `GET` | `/api/skins/:nickname/info` | no | `{ nickname, exists, size_bytes, uploaded_at, updated_at }` |
 | `POST` | `/api/skins/upload` | yes | `multipart/form-data`, field `file` |
 | `DELETE` | `/api/skins` | yes | Deletes the caller's skin (`?nickname=` fallback) |
@@ -97,11 +99,26 @@ npm run typecheck
 
 ## CustomSkinLoader
 
-Point the mod's skin source at:
+CustomSkinLoader requests `<username>.json` from a skin source and expects a
+profile document. Point the mod's source at:
 
 ```
-https://<worker-host>/api/skins/{username}.png
+https://<worker-host>/api/skins
 ```
 
-Missing skins return the default Steve PNG instead of 404, so the client always
-gets a usable image.
+`GET /api/skins/Steve.json` returns `200 application/json`:
+
+```json
+{
+  "skin": {
+    "url": "https://escapebook-skins.fireman777sasha.workers.dev/api/skins/Steve.png",
+    "model": "default"
+  },
+  "cape": null
+}
+```
+
+If the player has no stored skin the endpoint returns `{}` with `200`, which
+CSL treats as "no custom skin" and falls back to its default behaviour. The
+`.png` endpoint still serves the image directly (and the default Steve PNG when
+no skin is stored), so browser checks and direct image requests keep working.

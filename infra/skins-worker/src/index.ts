@@ -6,6 +6,7 @@
 //
 // Routes:
 //   GET    /api/skins/:nickname.png    -> PNG bytes (default Steve if absent)
+//   GET    /api/skins/:nickname.json   -> CustomSkinLoader profile (see below)
 //   GET    /api/skins/:nickname/info   -> JSON metadata
 //   POST   /api/skins/upload           -> multipart/form-data, field "file"
 //   DELETE /api/skins                  -> removes the caller's skin
@@ -101,6 +102,34 @@ function jsonResponse(
   return new Response(JSON.stringify(data), { status, headers });
 }
 
+// Public skin reads are consumed by Minecraft mods and the launcher, not just
+// the website, so they must be readable from any origin. These endpoints never
+// accept credentials, which is what makes the wildcard safe here.
+function publicCorsHeaders(): Headers {
+  const headers = new Headers();
+  headers.set("Access-Control-Allow-Origin", "*");
+  headers.set("X-Content-Type-Options", "nosniff");
+  return headers;
+}
+
+function publicJsonResponse(
+  data: unknown,
+  status: number,
+  extraHeaders?: Record<string, string>,
+): Response {
+  const headers = publicCorsHeaders();
+  headers.set("Content-Type", "application/json; charset=utf-8");
+  headers.set("Cache-Control", "no-store");
+  if (extraHeaders) {
+    for (const [key, value] of Object.entries(extraHeaders)) headers.set(key, value);
+  }
+  return new Response(JSON.stringify(data), { status, headers });
+}
+
+function publicErrorResponse(status: number, code: string, message: string): Response {
+  return publicJsonResponse({ ok: false, error: code, message }, status);
+}
+
 function errorResponse(
   status: number,
   code: string,
@@ -116,15 +145,23 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 
 function pngResponse(
   bytes: Uint8Array,
-  origin: string | null,
   cacheControl: string,
   contentType = "image/png",
 ): Response {
-  const headers = corsHeaders(origin);
+  const headers = publicCorsHeaders();
   headers.set("Content-Type", contentType);
   headers.set("Cache-Control", cacheControl);
-  headers.set("X-Content-Type-Options", "nosniff");
   return new Response(toArrayBuffer(bytes), { status: 200, headers });
+}
+
+// CustomSkinLoader reads skins from a profile endpoint that must answer with a
+// JSON document, not an image. A missing/empty object tells the mod "no custom
+// skin here", so it falls back to its default behaviour instead of erroring.
+function cslJsonResponse(data: unknown): Response {
+  const headers = publicCorsHeaders();
+  headers.set("Content-Type", "application/json; charset=utf-8");
+  headers.set("Cache-Control", "no-cache, must-revalidate");
+  return new Response(JSON.stringify(data), { status: 200, headers });
 }
 
 // D1 returns BLOBs as ArrayBuffer; older runtimes may hand back a byte array.
@@ -386,15 +423,13 @@ function parseNickname(raw: string | null): string | null {
 async function handleGetSkin(
   nicknameRaw: string,
   env: Env,
-  origin: string | null,
 ): Promise<Response> {
   const nickname = parseNickname(nicknameRaw);
   if (!nickname) {
-    return errorResponse(
+    return publicErrorResponse(
       400,
       "invalid_nickname",
       "Nickname must be 3-16 characters: letters, digits or underscore.",
-      origin,
     );
   }
 
@@ -408,7 +443,6 @@ async function handleGetSkin(
     if (!row) {
       return pngResponse(
         getDefaultSkin(),
-        origin,
         "public, max-age=60, stale-while-revalidate=300",
       );
     }
@@ -418,7 +452,6 @@ async function handleGetSkin(
       console.error(`skins-worker: empty skin_data for "${nickname}", serving default`);
       return pngResponse(
         getDefaultSkin(),
-        origin,
         "public, max-age=60, stale-while-revalidate=300",
       );
     }
@@ -427,7 +460,6 @@ async function handleGetSkin(
     // instead of being served from a stale hour-long cache.
     return pngResponse(
       bytes,
-      origin,
       "no-cache, must-revalidate",
       row.content_type || "image/png",
     );
@@ -435,26 +467,62 @@ async function handleGetSkin(
     const reason = error instanceof Error ? error.message : String(error);
     console.error(`skins-worker: D1 read failed for "${nickname}": ${reason}`);
     // Never fail the game client: fall back to the default skin.
-    return pngResponse(
-      getDefaultSkin(),
-      origin,
-      "public, max-age=30",
-    );
+    return pngResponse(getDefaultSkin(), "public, max-age=30");
+  }
+}
+
+// Serves the CustomSkinLoader profile for `<nickname>.json`. Only existence
+// matters here: the actual pixels are fetched from the canonical `.png` URL.
+async function handleGetSkinJson(
+  nicknameRaw: string,
+  env: Env,
+): Promise<Response> {
+  const cleanNickname = nicknameRaw.replace(/\.json$/i, "");
+
+  // Mirror the .png behaviour: never fail the game client. An unrecognised
+  // nickname is reported as "no skin" rather than as an error.
+  const nickname = parseNickname(cleanNickname);
+  if (!nickname) {
+    console.warn(`skins-worker: invalid nickname in .json request: "${nicknameRaw}"`);
+    return cslJsonResponse({});
+  }
+
+  try {
+    const row = await env.DB.prepare("SELECT 1 AS present FROM skins WHERE nickname = ?")
+      .bind(nickname)
+      .first<{ present: number }>();
+
+    if (!row) {
+      return cslJsonResponse({});
+    }
+
+    // CustomSkinLoader cannot resolve relative paths, so hand it the absolute
+    // canonical host rather than deriving the URL from the incoming request.
+    const pngUrl = `https://escapebook-skins.fireman777sasha.workers.dev/api/skins/${encodeURIComponent(nickname)}.png`;
+    return cslJsonResponse({
+      skin: {
+        url: pngUrl,
+        model: "default",
+      },
+      cape: null,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error(`skins-worker: D1 json read failed for "${nickname}": ${reason}`);
+    return cslJsonResponse({});
   }
 }
 
 async function handleGetInfo(
   nicknameRaw: string,
   env: Env,
-  origin: string | null,
 ): Promise<Response> {
   const nickname = parseNickname(nicknameRaw);
   if (!nickname) {
-    return errorResponse(
+    return publicErrorResponse(
       400,
       "invalid_nickname",
       "Nickname must be 3-16 characters: letters, digits or underscore.",
-      origin,
     );
   }
 
@@ -466,36 +534,26 @@ async function handleGetInfo(
       .first<SkinInfoRow>();
 
     if (!row) {
-      return jsonResponse(
-        {
-          nickname,
-          exists: false,
-          size_bytes: null,
-          uploaded_at: null,
-          updated_at: null,
-        },
-        200,
-        origin,
-        { "Cache-Control": "no-store" },
-      );
+      return publicJsonResponse({
+        nickname,
+        exists: false,
+        size_bytes: null,
+        uploaded_at: null,
+        updated_at: null,
+      }, 200);
     }
 
-    return jsonResponse(
-      {
-        nickname,
-        exists: true,
-        size_bytes: row.size_bytes,
-        uploaded_at: row.uploaded_at,
-        updated_at: row.updated_at,
-      },
-      200,
-      origin,
-      { "Cache-Control": "no-store" },
-    );
+    return publicJsonResponse({
+      nickname,
+      exists: true,
+      size_bytes: row.size_bytes,
+      uploaded_at: row.uploaded_at,
+      updated_at: row.updated_at,
+    }, 200);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     console.error(`skins-worker: D1 info query failed for "${nickname}": ${reason}`);
-    return errorResponse(500, "storage_error", "Could not read skin metadata.", origin);
+    return publicErrorResponse(500, "storage_error", "Could not read skin metadata.");
   }
 }
 
@@ -668,25 +726,8 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname;
 
-      // Public: skin bytes.
-      const skinMatch = /^\/api\/skins\/([^/]+)\.png$/.exec(path);
-      if (skinMatch) {
-        if (request.method !== "GET") {
-          return errorResponse(405, "method_not_allowed", "Use GET for this endpoint.", origin);
-        }
-        return await handleGetSkin(skinMatch[1], env, origin);
-      }
-
-      // Public: metadata.
-      const infoMatch = /^\/api\/skins\/([^/]+)\/info$/.exec(path);
-      if (infoMatch) {
-        if (request.method !== "GET") {
-          return errorResponse(405, "method_not_allowed", "Use GET for this endpoint.", origin);
-        }
-        return await handleGetInfo(infoMatch[1], env, origin);
-      }
-
-      // Authenticated: upload.
+      // Authenticated: upload. Checked before the public skin branch below so
+      // that "upload" is never mistaken for a nickname.
       if (path === "/api/skins/upload") {
         if (request.method !== "POST") {
           return errorResponse(405, "method_not_allowed", "Use POST for this endpoint.", origin);
@@ -700,6 +741,41 @@ export default {
           return errorResponse(405, "method_not_allowed", "Use DELETE for this endpoint.", origin);
         }
         return await handleDelete(request, env, origin, url);
+      }
+
+      // Public skin endpoints. Parse the pathname by hand instead of relying on
+      // router parameter matching: CustomSkinLoader requests `<nickname>.json`
+      // and the extension must be stripped before the D1 lookup, while the
+      // plain `.png` form keeps serving the image bytes.
+      if (path.startsWith("/api/skins/")) {
+        if (request.method !== "GET") {
+          return publicErrorResponse(405, "method_not_allowed", "Use GET for this endpoint.");
+        }
+
+        const fullPath = path.slice("/api/skins/".length);
+
+        // Metadata: /api/skins/<nickname>/info
+        if (/\/info$/i.test(fullPath)) {
+          return await handleGetInfo(fullPath.slice(0, -"/info".length), env);
+        }
+
+        const isJsonRequest = /\.json$/i.test(fullPath);
+        const cleanNickname = fullPath.replace(/\.(json|png)$/i, "");
+        if (!cleanNickname) {
+          return publicErrorResponse(
+            400,
+            "missing_nickname",
+            "A nickname is required after /api/skins/.",
+          );
+        }
+
+        if (isJsonRequest) {
+          // CustomSkinLoader profile (always JSON, even for unknown players).
+          return await handleGetSkinJson(cleanNickname, env);
+        }
+
+        // PNG bytes (or the default Steve skin when nothing is stored).
+        return await handleGetSkin(cleanNickname, env);
       }
 
       return errorResponse(404, "not_found", "Endpoint not found.", origin);
